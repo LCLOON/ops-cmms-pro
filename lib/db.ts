@@ -4,12 +4,21 @@ import path from 'path';
 import os from 'os';
 
 function resolveDbPath(): string {
-  // Always use system temp directory to avoid Turbopack file-watcher
-  // contention with SQLite WAL/SHM files on Windows.
-  if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
-    return path.join('/tmp', 'ops-cmms-pro.db');
-  }
-  return path.join(os.tmpdir(), 'ops-cmms-pro.db');
+  // Explicit override wins (deployments, tests, custom data locations).
+  if (process.env.OPS_CMMS_DB_PATH) return process.env.OPS_CMMS_DB_PATH;
+
+  // Serverless (Vercel): /tmp is the only writable location, and it is
+  // inherently ephemeral there.
+  if (process.env.VERCEL) return path.join('/tmp', 'ops-cmms-pro.db');
+
+  // Self-hosted (dev or `next start`): keep the database OUTSIDE the project
+  // tree so the dev server's file watcher never trips on SQLite WAL/SHM
+  // churn, but in a persistent per-user directory so data survives reboots,
+  // OS temp cleanups, and dependency reinstalls.
+  const base = process.platform === 'win32'
+    ? process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+    : process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  return path.join(base, 'ops-cmms-pro', 'ops-cmms-pro.db');
 }
 
 const DB_PATH = resolveDbPath();
