@@ -71,6 +71,11 @@ async function tableHasColumn(db: Client, table: string, column: string): Promis
   return rs.rows.some(r => (r as unknown as { name: string }).name === column);
 }
 
+async function tableExists(db: Client, table: string): Promise<boolean> {
+  const rs = await db.execute({ sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", args: [table] });
+  return rs.rows.length > 0;
+}
+
 async function initSchema(db: Client): Promise<void> {
   // Conditional ALTERs: append any columns that are missing from older databases.
   const assetCols: Array<[string, string]> = [
@@ -104,18 +109,25 @@ async function initSchema(db: Client): Promise<void> {
     ['follow_up_wo_id', "ALTER TABLE wo_checklist_items ADD COLUMN follow_up_wo_id TEXT NOT NULL DEFAULT ''"],
     ['source_version', "ALTER TABLE wo_checklist_items ADD COLUMN source_version TEXT NOT NULL DEFAULT ''"],
   ];
+  // ALTERs exist to migrate databases created before a column was introduced.
+  // They must only be emitted for tables that already exist: on a fresh database
+  // the CREATE TABLE statements below define every column, and emitting an ALTER
+  // for a table that is not there yet aborts the entire batch with
+  // "no such table: <name>". That failure is self-perpetuating — a database
+  // missing `procedures` could never create it, because the ALTER for it ran
+  // before its CREATE in the same batch. Skipping missing tables breaks the loop.
   let alters = '';
-  for (const [col, ddl] of assetCols) {
-    if (!(await tableHasColumn(db, 'assets', col))) alters += '    ' + ddl + ';\n';
-  }
-  for (const [col, ddl] of pmCols) {
-    if (!(await tableHasColumn(db, 'pm_schedules', col))) alters += '    ' + ddl + ';\n';
-  }
-  for (const [col, ddl] of procedureCols) {
-    if (!(await tableHasColumn(db, 'procedures', col))) alters += '    ' + ddl + ';\n';
-  }
-  for (const [col, ddl] of checklistCols) {
-    if (!(await tableHasColumn(db, 'wo_checklist_items', col))) alters += '    ' + ddl + ';\n';
+  const alterGroups: Array<[string, Array<[string, string]>]> = [
+    ['assets', assetCols],
+    ['pm_schedules', pmCols],
+    ['procedures', procedureCols],
+    ['wo_checklist_items', checklistCols],
+  ];
+  for (const [table, cols] of alterGroups) {
+    if (!(await tableExists(db, table))) continue;
+    for (const [col, ddl] of cols) {
+      if (!(await tableHasColumn(db, table, col))) alters += '    ' + ddl + ';\n';
+    }
   }
 
   await db.executeMultiple(`
@@ -233,7 +245,6 @@ async function initSchema(db: Client): Promise<void> {
     );
 
     -- Add parent_id to assets for hierarchy (skip if exists)
-    ${alters}
 
     CREATE TABLE IF NOT EXISTS audit_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -472,6 +483,10 @@ async function initSchema(db: Client): Promise<void> {
       completed_by TEXT NOT NULL DEFAULT '',
       completed_at TEXT NOT NULL DEFAULT ''
     );
+
+    -- Column migrations run LAST: every table above now exists, so this is safe
+    -- on both fresh and pre-existing databases.
+    ${alters}
   `);
 
   await backfillProcedureGovernance(db);
