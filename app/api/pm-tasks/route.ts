@@ -27,7 +27,8 @@ export async function POST(request: Request) {
     const pm = { ...parsed.data, id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     upsertPmSchedule(pm);
     return NextResponse.json(pm);
-  } catch {
+  } catch (err) {
+    console.error('[api/pm-tasks POST]', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

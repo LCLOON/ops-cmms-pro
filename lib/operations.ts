@@ -16,10 +16,12 @@ const SEED_ASSETS: Asset[] = [
   { id: 'AST-005', name: 'Forklift #3', category: 'vehicle', location: 'Warehouse B', department: 'Logistics', manufacturer: 'Toyota', model: '8FGU25', serialNumber: 'TY-2022-033', installDate: '2022-05-10', warrantyExpiry: '2025-05-10', status: 'operational', criticality: 'medium', notes: 'Electric forklift', parentId: '', createdAt: nowIso(), updatedAt: nowIso() },
 ];
 
+// Seeded work orders backdate createdAt so it always precedes due/completed
+// dates — MTTR/MTBF are computed from created_at and must never go negative.
 const SEED_WORK_ORDERS: WorkOrder[] = [
-  { id: 'WO-001', assetId: 'AST-001', title: 'Chiller refrigerant leak repair', description: 'Found refrigerant leak at compressor seal', type: 'corrective', priority: 'high', status: 'in_progress', assignedTo: 'Technician', requestedBy: 'Manager', dueDate: '2026-06-30', completedDate: '', laborHours: 4, partsCost: 350, resolution: '', createdAt: nowIso(), updatedAt: nowIso() },
-  { id: 'WO-002', assetId: 'AST-004', title: 'Annual fire pump test', description: 'NFPA 25 annual flow test', type: 'inspection', priority: 'medium', status: 'open', assignedTo: '', requestedBy: 'Safety Officer', dueDate: '2026-07-15', completedDate: '', laborHours: 2, partsCost: 0, resolution: '', createdAt: nowIso(), updatedAt: nowIso() },
-  { id: 'WO-003', assetId: 'AST-002', title: 'Air compressor oil change', description: 'Scheduled 2000hr oil change', type: 'preventive', priority: 'low', status: 'completed', assignedTo: 'Technician', requestedBy: 'PM Schedule', dueDate: '2026-06-20', completedDate: '2026-06-19', laborHours: 1.5, partsCost: 85, resolution: 'Oil and filters changed', createdAt: nowIso(), updatedAt: nowIso() },
+  { id: 'WO-001', assetId: 'AST-001', title: 'Chiller refrigerant leak repair', description: 'Found refrigerant leak at compressor seal', type: 'corrective', priority: 'high', status: 'in_progress', assignedTo: 'Technician', requestedBy: 'Manager', dueDate: '2026-06-30', completedDate: '', laborHours: 4, partsCost: 350, resolution: '', createdAt: '2026-06-21T07:00:00.000Z', updatedAt: nowIso() },
+  { id: 'WO-002', assetId: 'AST-004', title: 'Annual fire pump test', description: 'NFPA 25 annual flow test', type: 'inspection', priority: 'medium', status: 'open', assignedTo: '', requestedBy: 'Safety Officer', dueDate: '2026-07-15', completedDate: '', laborHours: 2, partsCost: 0, resolution: '', createdAt: '2026-07-01T07:00:00.000Z', updatedAt: nowIso() },
+  { id: 'WO-003', assetId: 'AST-002', title: 'Air compressor oil change', description: 'Scheduled 2000hr oil change', type: 'preventive', priority: 'low', status: 'completed', assignedTo: 'Technician', requestedBy: 'PM Schedule', dueDate: '2026-06-20', completedDate: '2026-06-19', laborHours: 1.5, partsCost: 85, resolution: 'Oil and filters changed', createdAt: '2026-06-14T07:00:00.000Z', updatedAt: nowIso() },
 ];
 
 const SEED_PM_SCHEDULES: PmSchedule[] = [
@@ -214,7 +216,7 @@ export function deleteAsset(id: string): void {
 // ─── Work Orders ───────────────────────────────────────────────
 function rowToWorkOrder(r: Record<string, unknown>): WorkOrder {
   return {
-    id: r.id as string, assetId: r.asset_id as string, title: r.title as string,
+    id: r.id as string, assetId: (r.asset_id ?? '') as string, title: r.title as string,
     description: r.description as string, type: r.type as WorkOrder['type'],
     priority: r.priority as WorkOrder['priority'], status: r.status as WorkOrder['status'],
     assignedTo: r.assigned_to as string, requestedBy: r.requested_by as string,
@@ -242,7 +244,7 @@ export function upsertWorkOrder(wo: WorkOrder): void {
   db.prepare(`INSERT INTO work_orders (id,asset_id,title,description,type,priority,status,assigned_to,requested_by,due_date,completed_date,labor_hours,parts_cost,resolution,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,type=excluded.type,priority=excluded.priority,status=excluded.status,assigned_to=excluded.assigned_to,requested_by=excluded.requested_by,due_date=excluded.due_date,completed_date=excluded.completed_date,resolution=excluded.resolution,updated_at=excluded.updated_at`)
-    .run(wo.id, wo.assetId, wo.title, wo.description, wo.type, wo.priority, wo.status, wo.assignedTo, wo.requestedBy, wo.dueDate, wo.completedDate, wo.laborHours, wo.partsCost, wo.resolution);
+    .run(wo.id, wo.assetId || null, wo.title, wo.description, wo.type, wo.priority, wo.status, wo.assignedTo, wo.requestedBy, wo.dueDate, wo.completedDate, wo.laborHours, wo.partsCost, wo.resolution);
 }
 
 export function deleteWorkOrder(id: string): void {
@@ -252,7 +254,7 @@ export function deleteWorkOrder(id: string): void {
 // ─── PM Schedules ──────────────────────────────────────────────
 function rowToPmSchedule(r: Record<string, unknown>): PmSchedule {
   return {
-    id: r.id as string, assetId: r.asset_id as string, title: r.title as string,
+    id: r.id as string, assetId: (r.asset_id ?? '') as string, title: r.title as string,
     description: r.description as string, frequencyType: r.frequency_type as PmSchedule['frequencyType'],
     frequencyValue: r.frequency_value as number, lastCompleted: r.last_completed as string,
     nextDue: r.next_due as string, assignedTo: r.assigned_to as string,
@@ -266,7 +268,7 @@ export function getPmSchedules(): PmSchedule[] {
     SELECT pm.*, a.name as asset_name,
       COALESCE(s.name, p.name) as site_name
     FROM pm_schedules pm
-    JOIN assets a ON pm.asset_id = a.id
+    LEFT JOIN assets a ON pm.asset_id = a.id
     LEFT JOIN sites s ON a.parent_id = s.id
     LEFT JOIN assets p ON a.parent_id = p.id AND p.is_component = 0
     ORDER BY pm.next_due
@@ -282,7 +284,7 @@ export function upsertPmSchedule(pm: PmSchedule): void {
   db.prepare(`INSERT INTO pm_schedules (id,asset_id,title,description,frequency_type,frequency_value,last_completed,next_due,assigned_to,estimated_hours,active,deferral_reason,deferral_approved_by,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,frequency_type=excluded.frequency_type,frequency_value=excluded.frequency_value,last_completed=excluded.last_completed,next_due=excluded.next_due,assigned_to=excluded.assigned_to,estimated_hours=excluded.estimated_hours,active=excluded.active,deferral_reason=excluded.deferral_reason,deferral_approved_by=excluded.deferral_approved_by,updated_at=excluded.updated_at`)
-    .run(pm.id, pm.assetId, pm.title, pm.description, pm.frequencyType, pm.frequencyValue, pm.lastCompleted, pm.nextDue, pm.assignedTo, pm.estimatedHours, pm.active ? 1 : 0, pm.deferralReason || null, pm.deferralApprovedBy || null);
+    .run(pm.id, pm.assetId || null, pm.title, pm.description, pm.frequencyType, pm.frequencyValue, pm.lastCompleted, pm.nextDue, pm.assignedTo, pm.estimatedHours, pm.active ? 1 : 0, pm.deferralReason || '', pm.deferralApprovedBy || '');
 }
 
 export function deletePmSchedule(id: string): void {
@@ -585,10 +587,11 @@ export interface AnalyticsData {
 export function getAnalytics(): AnalyticsData {
   const db = getDb();
 
-  // MTTR: average days between completed_date and created_at for completed WOs
+  // MTTR: average days between created_at and completed_date for completed WOs.
+  // Clamped at 0 so backdated completions can never report negative repair time.
   const mttr = (db.prepare(`
     SELECT w.asset_id as assetId, a.name as assetName,
-      ROUND(AVG(julianday(w.completed_date) - julianday(w.created_at)), 1) as mttrDays,
+      ROUND(AVG(MAX(0.0, julianday(w.completed_date) - julianday(w.created_at))), 1) as mttrDays,
       COUNT(*) as workOrderCount
     FROM work_orders w JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' AND w.completed_date != '' AND w.created_at != ''
@@ -699,7 +702,7 @@ export function upsertSite(site: Site): void {
 // ─── Compliance Obligations ────────────────────────────────────
 export function getComplianceObligations(): ComplianceObligation[] {
   return (getDb().prepare('SELECT * FROM compliance_obligations ORDER BY next_due').all() as Record<string, unknown>[]).map(r => ({
-    id: r.id as string, siteId: r.site_id as string,
+    id: r.id as string, siteId: (r.site_id ?? '') as string,
     obligationType: r.obligation_type as ComplianceObligation['obligationType'],
     title: r.title as string, description: r.description as string,
     regulationRef: r.regulation_ref as string,
@@ -717,14 +720,14 @@ export function upsertComplianceObligation(o: ComplianceObligation): void {
   db.prepare(`INSERT INTO compliance_obligations (id,site_id,obligation_type,title,description,regulation_ref,frequency,last_completed,next_due,owner_role,evidence_required,status,priority,notes,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET obligation_type=excluded.obligation_type,title=excluded.title,description=excluded.description,regulation_ref=excluded.regulation_ref,frequency=excluded.frequency,last_completed=excluded.last_completed,next_due=excluded.next_due,owner_role=excluded.owner_role,evidence_required=excluded.evidence_required,status=excluded.status,priority=excluded.priority,notes=excluded.notes,updated_at=excluded.updated_at`)
-    .run(o.id, o.siteId, o.obligationType, o.title, o.description, o.regulationRef, o.frequency, o.lastCompleted, o.nextDue, o.ownerRole, o.evidenceRequired, o.status, o.priority, o.notes);
+    .run(o.id, o.siteId || null, o.obligationType, o.title, o.description, o.regulationRef, o.frequency, o.lastCompleted, o.nextDue, o.ownerRole, o.evidenceRequired, o.status, o.priority, o.notes);
 }
 
 // ─── Inspections ───────────────────────────────────────────────
 export function getInspections(): Inspection[] {
   return (getDb().prepare('SELECT * FROM inspections ORDER BY scheduled_date DESC').all() as Record<string, unknown>[]).map(r => ({
-    id: r.id as string, assetId: r.asset_id as string,
-    complianceObligationId: r.compliance_obligation_id as string,
+    id: r.id as string, assetId: (r.asset_id ?? '') as string,
+    complianceObligationId: (r.compliance_obligation_id ?? '') as string,
     inspectionType: r.inspection_type as Inspection['inspectionType'],
     title: r.title as string, description: r.description as string,
     scheduledDate: r.scheduled_date as string, completedDate: r.completed_date as string,
@@ -742,13 +745,13 @@ export function upsertInspection(i: Inspection): void {
   db.prepare(`INSERT INTO inspections (id,asset_id,compliance_obligation_id,inspection_type,title,description,scheduled_date,completed_date,inspector,findings,recommendations,corrective_actions,readings,photos,status,priority,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET inspection_type=excluded.inspection_type,title=excluded.title,description=excluded.description,scheduled_date=excluded.scheduled_date,completed_date=excluded.completed_date,inspector=excluded.inspector,findings=excluded.findings,recommendations=excluded.recommendations,corrective_actions=excluded.corrective_actions,readings=excluded.readings,photos=excluded.photos,status=excluded.status,priority=excluded.priority,updated_at=excluded.updated_at`)
-    .run(i.id, i.assetId, i.complianceObligationId, i.inspectionType, i.title, i.description, i.scheduledDate, i.completedDate, i.inspector, i.findings, i.recommendations, i.correctiveActions, i.readings, i.photos, i.status, i.priority);
+    .run(i.id, i.assetId || null, i.complianceObligationId || null, i.inspectionType, i.title, i.description, i.scheduledDate, i.completedDate, i.inspector, i.findings, i.recommendations, i.correctiveActions, i.readings, i.photos, i.status, i.priority);
 }
 
 // ─── Documents ─────────────────────────────────────────────────
 export function getDocuments(): Document[] {
   return (getDb().prepare('SELECT * FROM documents ORDER BY upload_date DESC').all() as Record<string, unknown>[]).map(r => ({
-    id: r.id as string, assetId: r.asset_id as string,
+    id: r.id as string, assetId: (r.asset_id ?? '') as string,
     documentType: r.document_type as Document['documentType'],
     title: r.title as string, description: r.description as string,
     filePath: r.file_path as string, fileUrl: r.file_url as string,
@@ -764,13 +767,13 @@ export function upsertDocument(d: Document): void {
   db.prepare(`INSERT INTO documents (id,asset_id,document_type,title,description,file_path,file_url,version,uploaded_by,upload_date,review_due_date,tags,active,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET document_type=excluded.document_type,title=excluded.title,description=excluded.description,file_path=excluded.file_path,file_url=excluded.file_url,version=excluded.version,review_due_date=excluded.review_due_date,tags=excluded.tags,active=excluded.active,updated_at=excluded.updated_at`)
-    .run(d.id, d.assetId, d.documentType, d.title, d.description, d.filePath, d.fileUrl, d.version, d.uploadedBy, d.uploadDate, d.reviewDueDate, d.tags, d.active ? 1 : 0);
+    .run(d.id, d.assetId || null, d.documentType, d.title, d.description, d.filePath, d.fileUrl, d.version, d.uploadedBy, d.uploadDate, d.reviewDueDate || '', d.tags, d.active ? 1 : 0);
 }
 
 // ─── Safety Permits ────────────────────────────────────────────
 export function getSafetyPermits(): SafetyPermit[] {
   return (getDb().prepare('SELECT * FROM safety_permits ORDER BY issued_date DESC').all() as Record<string, unknown>[]).map(r => ({
-    id: r.id as string, workOrderId: r.work_order_id as string, assetId: r.asset_id as string,
+    id: r.id as string, workOrderId: (r.work_order_id ?? '') as string, assetId: (r.asset_id ?? '') as string,
     permitType: r.permit_type as SafetyPermit['permitType'],
     permitNumber: r.permit_number as string, issuedBy: r.issued_by as string,
     issuedDate: r.issued_date as string, expiryDate: r.expiry_date as string,
@@ -787,13 +790,13 @@ export function upsertSafetyPermit(s: SafetyPermit): void {
   db.prepare(`INSERT INTO safety_permits (id,work_order_id,asset_id,permit_type,permit_number,issued_by,issued_date,expiry_date,status,description,hazards,precautions,approved_by,attachments,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET permit_type=excluded.permit_type,status=excluded.status,issued_by=excluded.issued_by,expiry_date=excluded.expiry_date,description=excluded.description,hazards=excluded.hazards,precautions=excluded.precautions,approved_by=excluded.approved_by,attachments=excluded.attachments,updated_at=excluded.updated_at`)
-    .run(s.id, s.workOrderId, s.assetId, s.permitType, s.permitNumber, s.issuedBy, s.issuedDate, s.expiryDate, s.status, s.description, s.hazards, s.precautions, s.approvedBy, s.attachments);
+    .run(s.id, s.workOrderId || null, s.assetId || null, s.permitType, s.permitNumber, s.issuedBy, s.issuedDate, s.expiryDate, s.status, s.description, s.hazards, s.precautions, s.approvedBy, s.attachments);
 }
 
 // ─── Electrical Tests ──────────────────────────────────────────
 export function getElectricalTests(): ElectricalTest[] {
   return (getDb().prepare('SELECT * FROM electrical_tests ORDER BY test_date DESC').all() as Record<string, unknown>[]).map(r => ({
-    id: r.id as string, assetId: r.asset_id as string,
+    id: r.id as string, assetId: (r.asset_id ?? '') as string,
     testType: r.test_type as ElectricalTest['testType'],
     testDate: r.test_date as string, results: r.results as string,
     nextDue: r.next_due as string, testedBy: r.tested_by as string,
@@ -807,7 +810,7 @@ export function upsertElectricalTest(t: ElectricalTest): void {
   db.prepare(`INSERT INTO electrical_tests (id,asset_id,test_type,test_date,results,next_due,tested_by,status,notes,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET test_type=excluded.test_type,test_date=excluded.test_date,results=excluded.results,next_due=excluded.next_due,tested_by=excluded.tested_by,status=excluded.status,notes=excluded.notes,updated_at=excluded.updated_at`)
-    .run(t.id, t.assetId, t.testType, t.testDate, t.results, t.nextDue, t.testedBy, t.status, t.notes);
+    .run(t.id, t.assetId || null, t.testType, t.testDate, t.results, t.nextDue, t.testedBy, t.status, t.notes);
 }
 
 // ─── Backlog aging (for dashboard / reports) ──────────────────
