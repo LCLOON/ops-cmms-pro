@@ -2,7 +2,7 @@
 
 Computerized Maintenance Management System for hydroelectric operations — asset registry, work orders, preventive maintenance, inventory, purchasing, compliance, and reporting.
 
-Built with Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, and SQLite (better-sqlite3).
+Built with Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, and SQLite via libSQL (`@libsql/client` — local file in development, remote [Turso](https://turso.tech) database in production).
 
 ## Getting Started
 
@@ -26,14 +26,42 @@ Change these before any real deployment. Sessions are JWT-based (8h) and require
 
 ## Database
 
-The SQLite database lives in a persistent per-user directory, deliberately outside the project tree so the dev server's file watcher never fights with SQLite WAL/SHM files:
+Database resolution order:
 
-- Windows: `%LOCALAPPDATA%\ops-cmms-pro\ops-cmms-pro.db`
-- macOS/Linux: `${XDG_DATA_HOME:-~/.local/share}/ops-cmms-pro/ops-cmms-pro.db`
-- Override with the `OPS_CMMS_DB_PATH` environment variable
-- On Vercel (serverless) it falls back to `/tmp` (ephemeral)
+1. `TURSO_DATABASE_URL` (+ `TURSO_AUTH_TOKEN`) — remote libSQL/Turso. Use this in production and on Vercel for durable data.
+2. `OPS_CMMS_DB_PATH` — explicit local file override.
+3. On Vercel without Turso env vars — `/tmp` file. It works, but each serverless instance has its own ephemeral copy, so data resets.
+4. Otherwise — persistent per-user data directory, deliberately outside the project tree so the dev server's file watcher never fights with SQLite WAL/SHM files:
+   - Windows: `%LOCALAPPDATA%\ops-cmms-pro\ops-cmms-pro.db`
+   - macOS/Linux: `${XDG_DATA_HOME:-~/.local/share}/ops-cmms-pro/ops-cmms-pro.db`
 
-To reset the demo data: stop the server, delete the `.db`, `-wal`, and `-shm` files, and restart — schema and seed data regenerate on the next request.
+Schema and seed data are created automatically on first run. To reset the demo data: stop the server, delete the `.db`, `-wal`, and `-shm` files, and restart.
+
+## Deploying to Vercel
+
+For durable data on Vercel, point the app at a hosted libSQL database (Turso):
+
+```bash
+# 1. One-time: install the Turso CLI and sign up / log in
+npm install -g turso
+turso auth signup        # or: turso auth login
+
+# 2. Create the database and get its URL + token
+turso db create ops-cmms-pro
+turso db show ops-cmms-pro --url
+turso db tokens create ops-cmms-pro
+
+# 3. Set the environment variables on Vercel (both environments)
+vercel env add TURSO_DATABASE_URL production   # libsql://... from step 2
+vercel env add TURSO_AUTH_TOKEN production     # token from step 2
+
+# 4. Redeploy
+vercel --prod
+```
+
+Also set `JWT_SECRET` on Vercel — the app refuses to start a production session without it.
+
+Without `TURSO_DATABASE_URL` the app still deploys and runs on Vercel (demo mode): every serverless instance gets its own throwaway `/tmp` database that resets.
 
 ## Scripts
 

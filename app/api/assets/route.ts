@@ -7,7 +7,7 @@ export async function GET() {
   try {
     const session = await getSession();
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    return NextResponse.json(getAssets());
+    return NextResponse.json(await getAssets());
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     const requestedId = typeof body === 'object' && body !== null && 'id' in body ? body.id : undefined;
     const id = typeof requestedId === 'string' && requestedId.trim() ? requestedId : 'AST-' + Date.now().toString(36).toUpperCase();
     const asset = { ...parsed.data, id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    upsertAsset(asset);
+    await upsertAsset(asset);
     return NextResponse.json(asset);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -43,13 +43,13 @@ export async function PUT(request: Request) {
     if (typeof body !== 'object' || body === null || !('id' in body) || typeof body.id !== 'string' || !body.id) {
       return NextResponse.json({ error: 'Asset ID required' }, { status: 400 });
     }
-    const existing = getAsset(body.id);
+    const existing = await getAsset(body.id);
     if (!existing) return NextResponse.json({ error: 'Asset not found' }, { status: 404 });
 
     const parsed = assetSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });
     const updated = { ...existing, ...parsed.data, id: existing.id, updatedAt: new Date().toISOString() };
-    upsertAsset(updated);
+    await upsertAsset(updated);
     return NextResponse.json(updated);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -64,7 +64,7 @@ export async function DELETE(request: Request) {
 
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
-    deleteAsset(id);
+    await deleteAsset(id);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

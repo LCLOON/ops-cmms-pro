@@ -7,7 +7,7 @@ export async function GET() {
   try {
     const session = await getSession();
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    return NextResponse.json(getInventory());
+    return NextResponse.json(await getInventory());
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
 
     const id = body.id || 'INV-' + Date.now().toString(36).toUpperCase();
     const item = { ...parsed.data, id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    upsertInventoryItem(item);
+    await upsertInventoryItem(item);
     return NextResponse.json(item);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -40,11 +40,11 @@ export async function PUT(request: Request) {
 
     const body = await request.json();
     if (!body.id) return NextResponse.json({ error: 'Item ID required' }, { status: 400 });
-    const existing = getInventory().find(i => i.id === body.id);
+    const existing = (await getInventory()).find(i => i.id === body.id);
     if (!existing) return NextResponse.json({ error: 'Item not found' }, { status: 404 });
 
     const updated = { ...existing, ...body, updatedAt: new Date().toISOString() };
-    upsertInventoryItem(updated);
+    await upsertInventoryItem(updated);
     return NextResponse.json(updated);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -59,7 +59,7 @@ export async function DELETE(request: Request) {
 
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
-    deleteInventoryItem(id);
+    await deleteInventoryItem(id);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

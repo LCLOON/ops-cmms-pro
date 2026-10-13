@@ -1,4 +1,5 @@
 import { getDb } from './db';
+import { type InStatement } from '@libsql/client';
 import bcryptjs from 'bcryptjs';
 import { generateHydroAssets, generateHydroInventory } from './hydro-seed';
 import { EXCEL_VENDORS } from './excel-vendors';
@@ -36,12 +37,22 @@ const SEED_INVENTORY: InventoryItem[] = [
   { id: 'INV-003', name: 'Electrical Fuse 100A', partNumber: 'FUS-100A-001', category: 'electrical', quantityOnHand: 5, minQuantity: 3, unitCost: 45.00, supplier: 'Grainger', location: 'Stockroom A1', notes: 'Class J time-delay', createdAt: nowIso(), updatedAt: nowIso() },
 ];
 
-export function seedDatabase(): void {
-  const db = getDb();
-  const count = (db.prepare('SELECT COUNT(*) as cnt FROM assets').get() as { cnt: number }).cnt;
+export async function seedDatabase(): Promise<void> {
+  const client = await getDb();
+  const countRs = await client.execute('SELECT COUNT(*) as cnt FROM assets');
+  const count = (countRs.rows[0] as unknown as { cnt: number }).cnt;
   if (count > 0) return;
 
-  db.transaction(() => {
+  // Collect every insert first, then flush in chunks. Batching keeps
+  // first-boot seeding fast even against a remote database, and each
+  // chunk is applied atomically.
+  const pending: InStatement[] = [];
+  const db = {
+    prepare: (sql: string) => ({
+      run: (...args: (string | number | null)[]) => { pending.push({ sql, args }); },
+    }),
+  };
+  {
     // Site config
     db.prepare(`INSERT OR IGNORE INTO site_config (id, company_name, site_name, site_address, manager_name, manager_email, manager_phone, setup_complete)
       VALUES (1, 'Kennebec Hydro Operations', 'Kennebec River Hydro Projects', 'Lockwood | Hydro Kennebec | Shawmut | Weston — Kennebec River, ME', 'Mike Thornton', 'mthornton@kennebechydro.com', '(207) 555-0142', 1)`).run();
@@ -140,43 +151,56 @@ export function seedDatabase(): void {
       ].filter(Boolean).join(' | ');
       insVendor.run(id, v.vendorName, '', '', '', '', v.sourceUrl, 'Net 30', notes, 1, nowIso(), nowIso());
     });
-  })();
-}
+  }
 
-// ─── Users ─────────────────────────────────────────────────────
-export function getUserByUsername(username: string): DbUser | null {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM users WHERE username = ? AND active = 1').get(username);
-  return row ? (row as DbUser) : null;
-}
-
-export function updateLastLogin(userId: number): void {
-  getDb().prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(userId);
-}
-
-export function getUsers(): DbUser[] {
-  return getDb().prepare('SELECT * FROM users ORDER BY role, username').all() as DbUser[];
-}
-
-export function upsertUser(u: { id?: number; username: string; display_name: string; role: string; active: number; password?: string; force_password_change?: number }): void {
-  const db = getDb();
-  if (u.password) {
-    db.prepare(`INSERT INTO users (username, password_hash, display_name, role, active, force_password_change) VALUES (?,?,?,?,?,?)
-      ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name, role=excluded.role, active=excluded.active, 
-      force_password_change=COALESCE(excluded.force_password_change,users.force_password_change), 
-      password_hash=excluded.password_hash, updated_at=datetime('now')`)
-      .run(u.username, bcryptjs.hashSync(u.password, 12), u.display_name, u.role, u.active, u.force_password_change ?? 0);
-  } else {
-    db.prepare(`INSERT INTO users (username, password_hash, display_name, role, active, force_password_change) VALUES (?,?,?,?,?,?)
-      ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name, role=excluded.role, active=excluded.active, 
-      force_password_change=COALESCE(excluded.force_password_change,users.force_password_change), 
-      updated_at=datetime('now')`)
-      .run(u.username, '', u.display_name, u.role, u.active, u.force_password_change ?? 0);
+  try {
+    for (let i = 0; i < pending.length; i += 200) {
+      await client.batch(pending.slice(i, i + 200), 'write');
+    }
+  } catch (err) {
+    // Partial seed: clear the data tables so the next request retries cleanly.
+    for (const t of ['sites', 'compliance_obligations', 'assets', 'work_orders', 'pm_schedules', 'inventory', 'vendors']) {
+      await client.execute(`DELETE FROM ${t}`).catch(() => {});
+    }
+    throw err;
   }
 }
 
-export function deleteUser(id: number): void {
-  getDb().prepare('DELETE FROM users WHERE id = ?').run(id);
+// ─── Users ─────────────────────────────────────────────────────
+export async function getUserByUsername(username: string): Promise<DbUser | null> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM users WHERE username = ? AND active = 1', args: [username] });
+  const row = rs.rows[0];
+  return row ? (row as unknown as DbUser) : null;
+}
+
+export async function updateLastLogin(userId: number): Promise<void> {
+  await (await getDb()).execute({ sql: "UPDATE users SET last_login_at = datetime('now') WHERE id = ?", args: [userId] });
+}
+
+export async function getUsers(): Promise<DbUser[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM users ORDER BY role, username');
+  return rs.rows as unknown as DbUser[];
+}
+
+export async function upsertUser(u: { id?: number; username: string; display_name: string; role: string; active: number; password?: string; force_password_change?: number }): Promise<void> {
+  const db = await getDb();
+  if (u.password) {
+    await db.execute({ sql: `INSERT INTO users (username, password_hash, display_name, role, active, force_password_change) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name, role=excluded.role, active=excluded.active, 
+      force_password_change=COALESCE(excluded.force_password_change,users.force_password_change), 
+      password_hash=excluded.password_hash, updated_at=datetime('now')`,
+      args: [u.username, bcryptjs.hashSync(u.password, 12), u.display_name, u.role, u.active, u.force_password_change ?? 0] });
+  } else {
+    await db.execute({ sql: `INSERT INTO users (username, password_hash, display_name, role, active, force_password_change) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name, role=excluded.role, active=excluded.active, 
+      force_password_change=COALESCE(excluded.force_password_change,users.force_password_change), 
+      updated_at=datetime('now')`,
+      args: [u.username, '', u.display_name, u.role, u.active, u.force_password_change ?? 0] });
+  }
+}
+
+export async function deleteUser(id: number): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM users WHERE id = ?', args: [id] });
 }
 
 // ─── Assets ────────────────────────────────────────────────────
@@ -192,25 +216,27 @@ function rowToAsset(r: Record<string, unknown>): Asset {
   };
 }
 
-export function getAssets(): Asset[] {
-  return (getDb().prepare('SELECT * FROM assets ORDER BY name').all() as Record<string, unknown>[]).map(rowToAsset);
+export async function getAssets(): Promise<Asset[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM assets ORDER BY name');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(rowToAsset);
 }
 
-export function getAsset(id: string): Asset | null {
-  const row = getDb().prepare('SELECT * FROM assets WHERE id = ?').get(id);
-  return row ? rowToAsset(row as Record<string, unknown>) : null;
+export async function getAsset(id: string): Promise<Asset | null> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM assets WHERE id = ?', args: [id] });
+  const row = rs.rows[0];
+  return row ? rowToAsset(row as unknown as Record<string, unknown>) : null;
 }
 
-export function upsertAsset(asset: Asset): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO assets (id,name,category,location,department,manufacturer,model,serial_number,install_date,warranty_expiry,status,criticality,notes,parent_id,area,system,replacement_cost,failure_mode,is_component,updated_at)
+export async function upsertAsset(asset: Asset): Promise<void> {
+  const db = await getDb();
+  await db.execute({ sql: `INSERT INTO assets (id,name,category,location,department,manufacturer,model,serial_number,install_date,warranty_expiry,status,criticality,notes,parent_id,area,system,replacement_cost,failure_mode,is_component,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name,category=excluded.category,location=excluded.location,department=excluded.department,manufacturer=excluded.manufacturer,model=excluded.model,serial_number=excluded.serial_number,install_date=excluded.install_date,warranty_expiry=excluded.warranty_expiry,status=excluded.status,criticality=excluded.criticality,notes=excluded.notes,parent_id=excluded.parent_id,area=excluded.area,system=excluded.system,replacement_cost=excluded.replacement_cost,failure_mode=excluded.failure_mode,is_component=excluded.is_component,updated_at=excluded.updated_at`)
-    .run(asset.id, asset.name, asset.category, asset.location, asset.department, asset.manufacturer, asset.model, asset.serialNumber, asset.installDate, asset.warrantyExpiry, asset.status, asset.criticality, asset.notes, asset.parentId || '', asset.area || '', asset.system || '', asset.replacementCost ?? 0, asset.failureMode ?? '', asset.isComponent ? 1 : 0);
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,category=excluded.category,location=excluded.location,department=excluded.department,manufacturer=excluded.manufacturer,model=excluded.model,serial_number=excluded.serial_number,install_date=excluded.install_date,warranty_expiry=excluded.warranty_expiry,status=excluded.status,criticality=excluded.criticality,notes=excluded.notes,parent_id=excluded.parent_id,area=excluded.area,system=excluded.system,replacement_cost=excluded.replacement_cost,failure_mode=excluded.failure_mode,is_component=excluded.is_component,updated_at=excluded.updated_at`,
+    args: [asset.id, asset.name, asset.category, asset.location, asset.department, asset.manufacturer, asset.model, asset.serialNumber, asset.installDate, asset.warrantyExpiry, asset.status, asset.criticality, asset.notes, asset.parentId || '', asset.area || '', asset.system || '', asset.replacementCost ?? 0, asset.failureMode ?? '', asset.isComponent ? 1 : 0] });
 }
 
-export function deleteAsset(id: string): void {
-  getDb().prepare('DELETE FROM assets WHERE id = ?').run(id);
+export async function deleteAsset(id: string): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM assets WHERE id = ?', args: [id] });
 }
 
 // ─── Work Orders ───────────────────────────────────────────────
@@ -226,29 +252,32 @@ function rowToWorkOrder(r: Record<string, unknown>): WorkOrder {
   };
 }
 
-export function getWorkOrders(): WorkOrder[] {
-  return (getDb().prepare('SELECT * FROM work_orders ORDER BY created_at DESC').all() as Record<string, unknown>[]).map(rowToWorkOrder);
+export async function getWorkOrders(): Promise<WorkOrder[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM work_orders ORDER BY created_at DESC');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(rowToWorkOrder);
 }
 
-export function getWorkOrder(id: string): WorkOrder | null {
-  const row = getDb().prepare('SELECT * FROM work_orders WHERE id = ?').get(id);
-  return row ? rowToWorkOrder(row as Record<string, unknown>) : null;
+export async function getWorkOrder(id: string): Promise<WorkOrder | null> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM work_orders WHERE id = ?', args: [id] });
+  const row = rs.rows[0];
+  return row ? rowToWorkOrder(row as unknown as Record<string, unknown>) : null;
 }
 
-export function getWorkOrdersByAsset(assetId: string): WorkOrder[] {
-  return (getDb().prepare('SELECT * FROM work_orders WHERE asset_id = ? ORDER BY created_at DESC').all(assetId) as Record<string, unknown>[]).map(rowToWorkOrder);
+export async function getWorkOrdersByAsset(assetId: string): Promise<WorkOrder[]> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM work_orders WHERE asset_id = ? ORDER BY created_at DESC', args: [assetId] });
+  return (rs.rows as unknown as Record<string, unknown>[]).map(rowToWorkOrder);
 }
 
-export function upsertWorkOrder(wo: WorkOrder): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO work_orders (id,asset_id,title,description,type,priority,status,assigned_to,requested_by,due_date,completed_date,labor_hours,parts_cost,resolution,updated_at)
+export async function upsertWorkOrder(wo: WorkOrder): Promise<void> {
+  const db = await getDb();
+  await db.execute({ sql: `INSERT INTO work_orders (id,asset_id,title,description,type,priority,status,assigned_to,requested_by,due_date,completed_date,labor_hours,parts_cost,resolution,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,type=excluded.type,priority=excluded.priority,status=excluded.status,assigned_to=excluded.assigned_to,requested_by=excluded.requested_by,due_date=excluded.due_date,completed_date=excluded.completed_date,resolution=excluded.resolution,updated_at=excluded.updated_at`)
-    .run(wo.id, wo.assetId || null, wo.title, wo.description, wo.type, wo.priority, wo.status, wo.assignedTo, wo.requestedBy, wo.dueDate, wo.completedDate, wo.laborHours, wo.partsCost, wo.resolution);
+    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,type=excluded.type,priority=excluded.priority,status=excluded.status,assigned_to=excluded.assigned_to,requested_by=excluded.requested_by,due_date=excluded.due_date,completed_date=excluded.completed_date,resolution=excluded.resolution,updated_at=excluded.updated_at`,
+    args: [wo.id, wo.assetId || null, wo.title, wo.description, wo.type, wo.priority, wo.status, wo.assignedTo, wo.requestedBy, wo.dueDate, wo.completedDate, wo.laborHours, wo.partsCost, wo.resolution] });
 }
 
-export function deleteWorkOrder(id: string): void {
-  getDb().prepare('DELETE FROM work_orders WHERE id = ?').run(id);
+export async function deleteWorkOrder(id: string): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM work_orders WHERE id = ?', args: [id] });
 }
 
 // ─── PM Schedules ──────────────────────────────────────────────
@@ -263,8 +292,8 @@ function rowToPmSchedule(r: Record<string, unknown>): PmSchedule {
   };
 }
 
-export function getPmSchedules(): PmSchedule[] {
-  return (getDb().prepare(`
+export async function getPmSchedules(): Promise<PmSchedule[]> {
+  const rs = await (await getDb()).execute(`
     SELECT pm.*, a.name as asset_name,
       COALESCE(s.name, p.name) as site_name
     FROM pm_schedules pm
@@ -272,23 +301,24 @@ export function getPmSchedules(): PmSchedule[] {
     LEFT JOIN sites s ON a.parent_id = s.id
     LEFT JOIN assets p ON a.parent_id = p.id AND p.is_component = 0
     ORDER BY pm.next_due
-  `).all() as Record<string, unknown>[]).map(r => ({
-    ...rowToPmSchedule(r as Record<string, unknown>),
+  `);
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
+    ...rowToPmSchedule(r),
     assetName: (r.asset_name as string) || '',
     siteName: (r.site_name as string) || '',
   }));
 }
 
-export function upsertPmSchedule(pm: PmSchedule): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO pm_schedules (id,asset_id,title,description,frequency_type,frequency_value,last_completed,next_due,assigned_to,estimated_hours,active,deferral_reason,deferral_approved_by,updated_at)
+export async function upsertPmSchedule(pm: PmSchedule): Promise<void> {
+  const db = await getDb();
+  await db.execute({ sql: `INSERT INTO pm_schedules (id,asset_id,title,description,frequency_type,frequency_value,last_completed,next_due,assigned_to,estimated_hours,active,deferral_reason,deferral_approved_by,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,frequency_type=excluded.frequency_type,frequency_value=excluded.frequency_value,last_completed=excluded.last_completed,next_due=excluded.next_due,assigned_to=excluded.assigned_to,estimated_hours=excluded.estimated_hours,active=excluded.active,deferral_reason=excluded.deferral_reason,deferral_approved_by=excluded.deferral_approved_by,updated_at=excluded.updated_at`)
-    .run(pm.id, pm.assetId || null, pm.title, pm.description, pm.frequencyType, pm.frequencyValue, pm.lastCompleted, pm.nextDue, pm.assignedTo, pm.estimatedHours, pm.active ? 1 : 0, pm.deferralReason || '', pm.deferralApprovedBy || '');
+    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,frequency_type=excluded.frequency_type,frequency_value=excluded.frequency_value,last_completed=excluded.last_completed,next_due=excluded.next_due,assigned_to=excluded.assigned_to,estimated_hours=excluded.estimated_hours,active=excluded.active,deferral_reason=excluded.deferral_reason,deferral_approved_by=excluded.deferral_approved_by,updated_at=excluded.updated_at`,
+    args: [pm.id, pm.assetId || null, pm.title, pm.description, pm.frequencyType, pm.frequencyValue, pm.lastCompleted, pm.nextDue, pm.assignedTo, pm.estimatedHours, pm.active ? 1 : 0, pm.deferralReason || '', pm.deferralApprovedBy || ''] });
 }
 
-export function deletePmSchedule(id: string): void {
-  getDb().prepare('DELETE FROM pm_schedules WHERE id = ?').run(id);
+export async function deletePmSchedule(id: string): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM pm_schedules WHERE id = ?', args: [id] });
 }
 
 // ─── Inventory ─────────────────────────────────────────────────
@@ -302,25 +332,27 @@ function rowToInventoryItem(r: Record<string, unknown>): InventoryItem {
   };
 }
 
-export function getInventory(): InventoryItem[] {
-  return (getDb().prepare('SELECT * FROM inventory ORDER BY name').all() as Record<string, unknown>[]).map(rowToInventoryItem);
+export async function getInventory(): Promise<InventoryItem[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM inventory ORDER BY name');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(rowToInventoryItem);
 }
 
-export function upsertInventoryItem(item: InventoryItem): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO inventory (id,name,part_number,category,quantity_on_hand,min_quantity,unit_cost,supplier,location,notes,updated_at)
+export async function upsertInventoryItem(item: InventoryItem): Promise<void> {
+  const db = await getDb();
+  await db.execute({ sql: `INSERT INTO inventory (id,name,part_number,category,quantity_on_hand,min_quantity,unit_cost,supplier,location,notes,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name,part_number=excluded.part_number,category=excluded.category,quantity_on_hand=excluded.quantity_on_hand,min_quantity=excluded.min_quantity,unit_cost=excluded.unit_cost,supplier=excluded.supplier,location=excluded.location,notes=excluded.notes,updated_at=excluded.updated_at`)
-    .run(item.id, item.name, item.partNumber, item.category, item.quantityOnHand, item.minQuantity, item.unitCost, item.supplier, item.location, item.notes);
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,part_number=excluded.part_number,category=excluded.category,quantity_on_hand=excluded.quantity_on_hand,min_quantity=excluded.min_quantity,unit_cost=excluded.unit_cost,supplier=excluded.supplier,location=excluded.location,notes=excluded.notes,updated_at=excluded.updated_at`,
+    args: [item.id, item.name, item.partNumber, item.category, item.quantityOnHand, item.minQuantity, item.unitCost, item.supplier, item.location, item.notes] });
 }
 
-export function deleteInventoryItem(id: string): void {
-  getDb().prepare('DELETE FROM inventory WHERE id = ?').run(id);
+export async function deleteInventoryItem(id: string): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM inventory WHERE id = ?', args: [id] });
 }
 
 // ─── Config ────────────────────────────────────────────────────
-export function getSiteConfig(): SiteConfig {
-  const row = getDb().prepare('SELECT * FROM site_config WHERE id = 1').get() as Record<string, unknown> | undefined;
+export async function getSiteConfig(): Promise<SiteConfig> {
+  const rs = await (await getDb()).execute('SELECT * FROM site_config WHERE id = 1');
+  const row = rs.rows[0] as unknown as Record<string, unknown> | undefined;
   if (!row) return { companyName: '', siteName: '', siteAddress: '', managerName: '', managerEmail: '', managerPhone: '', setupComplete: false };
   return {
     companyName: row.company_name as string, siteName: row.site_name as string,
@@ -331,25 +363,30 @@ export function getSiteConfig(): SiteConfig {
 }
 
 // ─── Dashboard Stats ───────────────────────────────────────────
-export function getDashboardStats() {
-  const db = getDb();
+export async function getDashboardStats() {
+  const db = await getDb();
+  const count = async (sql: string): Promise<number> => ((await db.execute(sql)).rows[0] as unknown as { cnt: number }).cnt;
   return {
-    totalAssets: (db.prepare('SELECT COUNT(*) as cnt FROM assets').get() as { cnt: number }).cnt,
-    openWorkOrders: (db.prepare("SELECT COUNT(*) as cnt FROM work_orders WHERE status IN ('open','in_progress')").get() as { cnt: number }).cnt,
-    overduePMs: (db.prepare("SELECT COUNT(*) as cnt FROM pm_schedules WHERE next_due < date('now') AND active = 1").get() as { cnt: number }).cnt,
-    downAssets: (db.prepare("SELECT COUNT(*) as cnt FROM assets WHERE status = 'down'").get() as { cnt: number }).cnt,
-    lowStock: (db.prepare('SELECT COUNT(*) as cnt FROM inventory WHERE quantity_on_hand <= min_quantity').get() as { cnt: number }).cnt,
-    completedThisMonth: (db.prepare("SELECT COUNT(*) as cnt FROM work_orders WHERE status = 'completed' AND completed_date >= date('now','start of month')").get() as { cnt: number }).cnt,
+    totalAssets: await count('SELECT COUNT(*) as cnt FROM assets'),
+    openWorkOrders: await count("SELECT COUNT(*) as cnt FROM work_orders WHERE status IN ('open','in_progress')"),
+    overduePMs: await count("SELECT COUNT(*) as cnt FROM pm_schedules WHERE next_due < date('now') AND active = 1"),
+    downAssets: await count("SELECT COUNT(*) as cnt FROM assets WHERE status = 'down'"),
+    lowStock: await count('SELECT COUNT(*) as cnt FROM inventory WHERE quantity_on_hand <= min_quantity'),
+    completedThisMonth: await count("SELECT COUNT(*) as cnt FROM work_orders WHERE status = 'completed' AND completed_date >= date('now','start of month')"),
   };
 }
 
 // ─── WO Parts ──────────────────────────────────────────────────
-export function getWoParts(workOrderId: string): WoPart[] {
-  return (getDb().prepare(`
+export async function getWoParts(workOrderId: string): Promise<WoPart[]> {
+  const rs = await (await getDb()).execute({
+    sql: `
     SELECT wp.*, i.name as inventory_name, i.part_number
     FROM wo_parts wp LEFT JOIN inventory i ON wp.inventory_item_id = i.id
     WHERE wp.work_order_id = ? ORDER BY wp.id
-  `).all(workOrderId) as Record<string, unknown>[]).map(r => ({
+  `,
+    args: [workOrderId],
+  });
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as number,
     workOrderId: r.work_order_id as string,
     inventoryItemId: r.inventory_item_id as string,
@@ -361,27 +398,32 @@ export function getWoParts(workOrderId: string): WoPart[] {
   }));
 }
 
-export function addWoPart(part: { workOrderId: string; inventoryItemId: string; quantity: number; unitCost: number }): WoPart {
-  const db = getDb();
-  const result = db.prepare('INSERT INTO wo_parts (work_order_id, inventory_item_id, quantity, unit_cost) VALUES (?,?,?,?)').run(part.workOrderId, part.inventoryItemId, part.quantity, part.unitCost);
+export async function addWoPart(part: { workOrderId: string; inventoryItemId: string; quantity: number; unitCost: number }): Promise<WoPart> {
+  const db = await getDb();
+  const result = await db.execute({ sql: 'INSERT INTO wo_parts (work_order_id, inventory_item_id, quantity, unit_cost) VALUES (?,?,?,?)', args: [part.workOrderId, part.inventoryItemId, part.quantity, part.unitCost] });
   // Update work order parts_cost
-  const total = (db.prepare('SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM wo_parts WHERE work_order_id = ?').get(part.workOrderId) as { t: number }).t;
-  db.prepare('UPDATE work_orders SET parts_cost = ? WHERE id = ?').run(total, part.workOrderId);
-  return getWoParts(part.workOrderId).find(p => p.id === Number(result.lastInsertRowid))!;
+  const totalRs = await db.execute({ sql: 'SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM wo_parts WHERE work_order_id = ?', args: [part.workOrderId] });
+  const total = (totalRs.rows[0] as unknown as { t: number }).t;
+  await db.execute({ sql: 'UPDATE work_orders SET parts_cost = ? WHERE id = ?', args: [total, part.workOrderId] });
+  const parts = await getWoParts(part.workOrderId);
+  return parts.find(p => p.id === Number(result.lastInsertRowid))!;
 }
 
-export function deleteWoPart(id: number): void {
-  const row = getDb().prepare('SELECT work_order_id FROM wo_parts WHERE id = ?').get(id) as { work_order_id: string } | undefined;
+export async function deleteWoPart(id: number): Promise<void> {
+  const db = await getDb();
+  const rowRs = await db.execute({ sql: 'SELECT work_order_id FROM wo_parts WHERE id = ?', args: [id] });
+  const row = rowRs.rows[0] as unknown as { work_order_id: string } | undefined;
   if (!row) return;
-  const db = getDb();
-  db.prepare('DELETE FROM wo_parts WHERE id = ?').run(id);
-  const total = (db.prepare('SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM wo_parts WHERE work_order_id = ?').get(row.work_order_id) as { t: number }).t;
-  db.prepare('UPDATE work_orders SET parts_cost = ? WHERE id = ?').run(total, row.work_order_id);
+  await db.execute({ sql: 'DELETE FROM wo_parts WHERE id = ?', args: [id] });
+  const totalRs = await db.execute({ sql: 'SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM wo_parts WHERE work_order_id = ?', args: [row.work_order_id] });
+  const total = (totalRs.rows[0] as unknown as { t: number }).t;
+  await db.execute({ sql: 'UPDATE work_orders SET parts_cost = ? WHERE id = ?', args: [total, row.work_order_id] });
 }
 
 // ─── WO Labor ──────────────────────────────────────────────────
-export function getWoLabor(workOrderId: string): WoLabor[] {
-  return (getDb().prepare('SELECT * FROM wo_labor WHERE work_order_id = ? ORDER BY id').all(workOrderId) as Record<string, unknown>[]).map(r => ({
+export async function getWoLabor(workOrderId: string): Promise<WoLabor[]> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM wo_labor WHERE work_order_id = ? ORDER BY id', args: [workOrderId] });
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as number,
     workOrderId: r.work_order_id as string,
     userId: r.user_id as number,
@@ -393,21 +435,24 @@ export function getWoLabor(workOrderId: string): WoLabor[] {
   }));
 }
 
-export function addWoLabor(entry: { workOrderId: string; userId: number; username: string; hours: number; loggedDate: string; notes: string }): WoLabor {
-  const db = getDb();
-  const result = db.prepare('INSERT INTO wo_labor (work_order_id, user_id, username, hours, logged_date, notes) VALUES (?,?,?,?,?,?)').run(entry.workOrderId, entry.userId, entry.username, entry.hours, entry.loggedDate, entry.notes);
-  const total = (db.prepare('SELECT COALESCE(SUM(hours),0) as t FROM wo_labor WHERE work_order_id = ?').get(entry.workOrderId) as { t: number }).t;
-  db.prepare('UPDATE work_orders SET labor_hours = ? WHERE id = ?').run(total, entry.workOrderId);
+export async function addWoLabor(entry: { workOrderId: string; userId: number; username: string; hours: number; loggedDate: string; notes: string }): Promise<WoLabor> {
+  const db = await getDb();
+  const result = await db.execute({ sql: 'INSERT INTO wo_labor (work_order_id, user_id, username, hours, logged_date, notes) VALUES (?,?,?,?,?,?)', args: [entry.workOrderId, entry.userId, entry.username, entry.hours, entry.loggedDate, entry.notes] });
+  const totalRs = await db.execute({ sql: 'SELECT COALESCE(SUM(hours),0) as t FROM wo_labor WHERE work_order_id = ?', args: [entry.workOrderId] });
+  const total = (totalRs.rows[0] as unknown as { t: number }).t;
+  await db.execute({ sql: 'UPDATE work_orders SET labor_hours = ? WHERE id = ?', args: [total, entry.workOrderId] });
   return { id: Number(result.lastInsertRowid), ...entry, createdAt: new Date().toISOString() };
 }
 
-export function deleteWoLabor(id: number): void {
-  const row = getDb().prepare('SELECT work_order_id FROM wo_labor WHERE id = ?').get(id) as { work_order_id: string } | undefined;
+export async function deleteWoLabor(id: number): Promise<void> {
+  const db = await getDb();
+  const rowRs = await db.execute({ sql: 'SELECT work_order_id FROM wo_labor WHERE id = ?', args: [id] });
+  const row = rowRs.rows[0] as unknown as { work_order_id: string } | undefined;
   if (!row) return;
-  const db = getDb();
-  db.prepare('DELETE FROM wo_labor WHERE id = ?').run(id);
-  const total = (db.prepare('SELECT COALESCE(SUM(hours),0) as t FROM wo_labor WHERE work_order_id = ?').get(row.work_order_id) as { t: number }).t;
-  db.prepare('UPDATE work_orders SET labor_hours = ? WHERE id = ?').run(total, row.work_order_id);
+  await db.execute({ sql: 'DELETE FROM wo_labor WHERE id = ?', args: [id] });
+  const totalRs = await db.execute({ sql: 'SELECT COALESCE(SUM(hours),0) as t FROM wo_labor WHERE work_order_id = ?', args: [row.work_order_id] });
+  const total = (totalRs.rows[0] as unknown as { t: number }).t;
+  await db.execute({ sql: 'UPDATE work_orders SET labor_hours = ? WHERE id = ?', args: [total, row.work_order_id] });
 }
 
 // ─── WO Status Transition ──────────────────────────────────────
@@ -423,39 +468,43 @@ export function getValidStatusTransitions(status: string): string[] {
   return VALID_TRANSITIONS[status] || [];
 }
 
-export function transitionWorkOrderStatus(id: string, newStatus: string): boolean {
-  const wo = getDb().prepare('SELECT status FROM work_orders WHERE id = ?').get(id) as { status: string } | undefined;
+export async function transitionWorkOrderStatus(id: string, newStatus: string): Promise<boolean> {
+  const db = await getDb();
+  const rs = await db.execute({ sql: 'SELECT status FROM work_orders WHERE id = ?', args: [id] });
+  const wo = rs.rows[0] as unknown as { status: string } | undefined;
   if (!wo) return false;
   const valid = VALID_TRANSITIONS[wo.status] || [];
   if (!valid.includes(newStatus)) return false;
   const now = new Date().toISOString();
   if (newStatus === 'completed') {
-    getDb().prepare("UPDATE work_orders SET status = ?, completed_date = ?, updated_at = ? WHERE id = ?").run(newStatus, now, now, id);
+    await db.execute({ sql: 'UPDATE work_orders SET status = ?, completed_date = ?, updated_at = ? WHERE id = ?', args: [newStatus, now, now, id] });
   } else {
-    getDb().prepare("UPDATE work_orders SET status = ?, updated_at = ? WHERE id = ?").run(newStatus, now, id);
+    await db.execute({ sql: 'UPDATE work_orders SET status = ?, updated_at = ? WHERE id = ?', args: [newStatus, now, id] });
   }
   return true;
 }
 
 // ─── PM → WO Generation ───────────────────────────────────────
-export function generateWorkOrderFromPm(pmId: string, userId: number, username: string): string | null {
-  const pm = getDb().prepare('SELECT * FROM pm_schedules WHERE id = ?').get(pmId) as Record<string, unknown> | undefined;
+export async function generateWorkOrderFromPm(pmId: string, userId: number, username: string): Promise<string | null> {
+  const db = await getDb();
+  const rs = await db.execute({ sql: 'SELECT * FROM pm_schedules WHERE id = ?', args: [pmId] });
+  const pm = rs.rows[0] as unknown as Record<string, unknown> | undefined;
   if (!pm) return null;
 
   const woId = 'WO-' + Date.now().toString(36).toUpperCase();
   const now = new Date().toISOString();
-  getDb().prepare(`INSERT INTO work_orders (id, asset_id, title, description, type, priority, status, assigned_to, requested_by, due_date, created_at, updated_at)
-    VALUES (?,?,?,?,'preventive','medium','open',?,?,?,?,?)`)
-    .run(woId, pm.asset_id, pm.title, pm.description || 'Generated from PM schedule', pm.assigned_to, username, pm.next_due, now, now);
+  await db.execute({ sql: `INSERT INTO work_orders (id, asset_id, title, description, type, priority, status, assigned_to, requested_by, due_date, created_at, updated_at)
+    VALUES (?,?,?,?,'preventive','medium','open',?,?,?,?,?)`,
+    args: [woId, pm.asset_id as string | null, pm.title as string, (pm.description as string) || 'Generated from PM schedule', pm.assigned_to as string, username, pm.next_due as string, now, now] });
 
   // Update PM: set last_completed = today, recalculate next_due
-  const nextDue = calcNextDue(pm.frequency_type as string, pm.frequency_value as number);
-  getDb().prepare("UPDATE pm_schedules SET last_completed = date('now'), next_due = ?, updated_at = ? WHERE id = ?").run(nextDue, now, pmId);
+  const nextDue = await calcNextDue(pm.frequency_type as string, pm.frequency_value as number);
+  await db.execute({ sql: "UPDATE pm_schedules SET last_completed = date('now'), next_due = ?, updated_at = ? WHERE id = ?", args: [nextDue, now, pmId] });
 
   return woId;
 }
 
-function calcNextDue(freqType: string, freqValue: number): string {
+async function calcNextDue(freqType: string, freqValue: number): Promise<string> {
   const modifiers: Record<string, string> = {
     daily: `${freqValue} days`,
     weekly: `${freqValue * 7} days`,
@@ -465,8 +514,8 @@ function calcNextDue(freqType: string, freqValue: number): string {
     annual: `${freqValue} years`,
   };
   const mod = modifiers[freqType] || '1 months';
-  const result = getDb().prepare(`SELECT date('now', '+${mod}') as d`).get() as { d: string };
-  return result.d;
+  const rs = await (await getDb()).execute(`SELECT date('now', '+${mod}') as d`);
+  return (rs.rows[0] as unknown as { d: string }).d;
 }
 
 // ─── Vendors ───────────────────────────────────────────────────
@@ -480,24 +529,26 @@ function rowToVendor(r: Record<string, unknown>): Vendor {
   };
 }
 
-export function getVendors(): Vendor[] {
-  return (getDb().prepare('SELECT * FROM vendors ORDER BY name').all() as Record<string, unknown>[]).map(rowToVendor);
+export async function getVendors(): Promise<Vendor[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM vendors ORDER BY name');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(rowToVendor);
 }
 
-export function upsertVendor(v: Vendor): void {
-  getDb().prepare(`INSERT INTO vendors (id,name,contact_name,email,phone,address,website,payment_terms,notes,active,updated_at)
+export async function upsertVendor(v: Vendor): Promise<void> {
+  await (await getDb()).execute({ sql: `INSERT INTO vendors (id,name,contact_name,email,phone,address,website,payment_terms,notes,active,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name,contact_name=excluded.contact_name,email=excluded.email,phone=excluded.phone,address=excluded.address,website=excluded.website,payment_terms=excluded.payment_terms,notes=excluded.notes,active=excluded.active,updated_at=excluded.updated_at`)
-    .run(v.id, v.name, v.contactName, v.email, v.phone, v.address, v.website, v.paymentTerms, v.notes, v.active ? 1 : 0);
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,contact_name=excluded.contact_name,email=excluded.email,phone=excluded.phone,address=excluded.address,website=excluded.website,payment_terms=excluded.payment_terms,notes=excluded.notes,active=excluded.active,updated_at=excluded.updated_at`,
+    args: [v.id, v.name, v.contactName, v.email, v.phone, v.address, v.website, v.paymentTerms, v.notes, v.active ? 1 : 0] });
 }
 
-export function deleteVendor(id: string): void {
-  getDb().prepare('DELETE FROM vendors WHERE id = ?').run(id);
+export async function deleteVendor(id: string): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM vendors WHERE id = ?', args: [id] });
 }
 
 // ─── Purchase Orders ───────────────────────────────────────────
-export function getPurchaseOrders(): PurchaseOrder[] {
-  return (getDb().prepare(`SELECT po.*, v.name as vendor_name FROM purchase_orders po LEFT JOIN vendors v ON po.vendor_id = v.id ORDER BY po.created_at DESC`).all() as Record<string, unknown>[]).map(r => ({
+export async function getPurchaseOrders(): Promise<PurchaseOrder[]> {
+  const rs = await (await getDb()).execute(`SELECT po.*, v.name as vendor_name FROM purchase_orders po LEFT JOIN vendors v ON po.vendor_id = v.id ORDER BY po.created_at DESC`);
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as string, vendorId: (r.vendor_id as string) || '', vendorName: (r.vendor_name as string) || '',
     poNumber: r.po_number as string, status: r.status as PurchaseOrder['status'],
     orderDate: r.order_date as string, expectedDate: r.expected_date as string,
@@ -507,64 +558,67 @@ export function getPurchaseOrders(): PurchaseOrder[] {
   }));
 }
 
-export function upsertPurchaseOrder(po: PurchaseOrder): void {
-  getDb().prepare(`INSERT INTO purchase_orders (id,vendor_id,po_number,status,order_date,expected_date,received_date,total_cost,notes,created_by,updated_at)
+export async function upsertPurchaseOrder(po: PurchaseOrder): Promise<void> {
+  await (await getDb()).execute({ sql: `INSERT INTO purchase_orders (id,vendor_id,po_number,status,order_date,expected_date,received_date,total_cost,notes,created_by,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET vendor_id=excluded.vendor_id,po_number=excluded.po_number,status=excluded.status,order_date=excluded.order_date,expected_date=excluded.expected_date,received_date=excluded.received_date,total_cost=excluded.total_cost,notes=excluded.notes,updated_at=excluded.updated_at`)
-    .run(po.id, po.vendorId || null, po.poNumber, po.status, po.orderDate, po.expectedDate, po.receivedDate, po.totalCost, po.notes, po.createdBy);
+    ON CONFLICT(id) DO UPDATE SET vendor_id=excluded.vendor_id,po_number=excluded.po_number,status=excluded.status,order_date=excluded.order_date,expected_date=excluded.expected_date,received_date=excluded.received_date,total_cost=excluded.total_cost,notes=excluded.notes,updated_at=excluded.updated_at`,
+    args: [po.id, po.vendorId || null, po.poNumber, po.status, po.orderDate, po.expectedDate, po.receivedDate, po.totalCost, po.notes, po.createdBy] });
 }
 
-export function deletePurchaseOrder(id: string): void {
-  getDb().prepare('DELETE FROM purchase_orders WHERE id = ?').run(id);
+export async function deletePurchaseOrder(id: string): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM purchase_orders WHERE id = ?', args: [id] });
 }
 
-export function getPoItems(poId: string): PoItem[] {
-  return (getDb().prepare('SELECT * FROM po_items WHERE po_id = ? ORDER BY id').all(poId) as Record<string, unknown>[]).map(r => ({
+export async function getPoItems(poId: string): Promise<PoItem[]> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM po_items WHERE po_id = ? ORDER BY id', args: [poId] });
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as number, poId: r.po_id as string, inventoryItemId: r.inventory_item_id as string,
     itemName: r.item_name as string, quantity: r.quantity as number, unitCost: r.unit_cost as number,
     createdAt: r.created_at as string,
   }));
 }
 
-export function addPoItem(item: { poId: string; inventoryItemId: string; itemName: string; quantity: number; unitCost: number }): void {
-  const db = getDb();
-  db.prepare('INSERT INTO po_items (po_id, inventory_item_id, item_name, quantity, unit_cost) VALUES (?,?,?,?,?)').run(item.poId, item.inventoryItemId, item.itemName, item.quantity, item.unitCost);
-  const total = (db.prepare('SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM po_items WHERE po_id = ?').get(item.poId) as { t: number }).t;
-  db.prepare('UPDATE purchase_orders SET total_cost = ? WHERE id = ?').run(total, item.poId);
+export async function addPoItem(item: { poId: string; inventoryItemId: string; itemName: string; quantity: number; unitCost: number }): Promise<void> {
+  const db = await getDb();
+  await db.execute({ sql: 'INSERT INTO po_items (po_id, inventory_item_id, item_name, quantity, unit_cost) VALUES (?,?,?,?,?)', args: [item.poId, item.inventoryItemId, item.itemName, item.quantity, item.unitCost] });
+  const totalRs = await db.execute({ sql: 'SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM po_items WHERE po_id = ?', args: [item.poId] });
+  const total = (totalRs.rows[0] as unknown as { t: number }).t;
+  await db.execute({ sql: 'UPDATE purchase_orders SET total_cost = ? WHERE id = ?', args: [total, item.poId] });
 }
 
-export function deletePoItem(id: number): void {
-  const row = getDb().prepare('SELECT po_id FROM po_items WHERE id = ?').get(id) as { po_id: string } | undefined;
+export async function deletePoItem(id: number): Promise<void> {
+  const db = await getDb();
+  const rowRs = await db.execute({ sql: 'SELECT po_id FROM po_items WHERE id = ?', args: [id] });
+  const row = rowRs.rows[0] as unknown as { po_id: string } | undefined;
   if (!row) return;
-  const db = getDb();
-  db.prepare('DELETE FROM po_items WHERE id = ?').run(id);
-  const total = (db.prepare('SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM po_items WHERE po_id = ?').get(row.po_id) as { t: number }).t;
-  db.prepare('UPDATE purchase_orders SET total_cost = ? WHERE id = ?').run(total, row.po_id);
+  await db.execute({ sql: 'DELETE FROM po_items WHERE id = ?', args: [id] });
+  const totalRs = await db.execute({ sql: 'SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM po_items WHERE po_id = ?', args: [row.po_id] });
+  const total = (totalRs.rows[0] as unknown as { t: number }).t;
+  await db.execute({ sql: 'UPDATE purchase_orders SET total_cost = ? WHERE id = ?', args: [total, row.po_id] });
 }
 
 // ─── Meter Readings ────────────────────────────────────────────
-export function getMeterReadings(assetId: string): MeterReading[] {
-  return (getDb().prepare('SELECT * FROM meter_readings WHERE asset_id = ? ORDER BY reading_date DESC').all(assetId) as Record<string, unknown>[]).map(r => ({
+export async function getMeterReadings(assetId: string): Promise<MeterReading[]> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM meter_readings WHERE asset_id = ? ORDER BY reading_date DESC', args: [assetId] });
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as number, assetId: r.asset_id as string, readingType: r.reading_type as string,
     value: r.value as number, unit: r.unit as string, readingDate: r.reading_date as string,
     recordedBy: r.recorded_by as string, notes: r.notes as string, createdAt: r.created_at as string,
   }));
 }
 
-export function addMeterReading(entry: { assetId: string; readingType: string; value: number; unit: string; readingDate: string; recordedBy: string; notes: string }): MeterReading {
-  const db = getDb();
-  const result = db.prepare('INSERT INTO meter_readings (asset_id, reading_type, value, unit, reading_date, recorded_by, notes) VALUES (?,?,?,?,?,?,?)').run(entry.assetId, entry.readingType, entry.value, entry.unit, entry.readingDate, entry.recordedBy, entry.notes);
+export async function addMeterReading(entry: { assetId: string; readingType: string; value: number; unit: string; readingDate: string; recordedBy: string; notes: string }): Promise<MeterReading> {
+  const result = await (await getDb()).execute({ sql: 'INSERT INTO meter_readings (asset_id, reading_type, value, unit, reading_date, recorded_by, notes) VALUES (?,?,?,?,?,?,?)', args: [entry.assetId, entry.readingType, entry.value, entry.unit, entry.readingDate, entry.recordedBy, entry.notes] });
   return { id: Number(result.lastInsertRowid), ...entry, createdAt: new Date().toISOString() };
 }
 
-export function deleteMeterReading(id: number): void {
-  getDb().prepare('DELETE FROM meter_readings WHERE id = ?').run(id);
+export async function deleteMeterReading(id: number): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM meter_readings WHERE id = ?', args: [id] });
 }
 
 // ─── Audit Trail ───────────────────────────────────────────────
-export function logAudit(entry: { userId?: number; username: string; action: string; entityType: string; entityId: string; details: string; changes?: string }): void {
-  getDb().prepare('INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details, changes) VALUES (?,?,?,?,?,?,?)')
-    .run(entry.userId || null, entry.username, entry.action, entry.entityType, entry.entityId, entry.details, entry.changes || '');
+export async function logAudit(entry: { userId?: number; username: string; action: string; entityType: string; entityId: string; details: string; changes?: string }): Promise<void> {
+  await (await getDb()).execute({ sql: 'INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details, changes) VALUES (?,?,?,?,?,?,?)', args: [entry.userId || null, entry.username, entry.action, entry.entityType, entry.entityId, entry.details, entry.changes || ''] });
 }
 
 // ─── Analytics ─────────────────────────────────────────────────
@@ -584,90 +638,90 @@ export interface AnalyticsData {
   backlog: { aging: string; count: number; totalCost: number }[];
 }
 
-export function getAnalytics(): AnalyticsData {
-  const db = getDb();
+export async function getAnalytics(): Promise<AnalyticsData> {
+  const db = await getDb();
 
   // MTTR: average days between created_at and completed_date for completed WOs.
   // Clamped at 0 so backdated completions can never report negative repair time.
-  const mttr = (db.prepare(`
+  const mttr = (await db.execute(`
     SELECT w.asset_id as assetId, a.name as assetName,
       ROUND(AVG(MAX(0.0, julianday(w.completed_date) - julianday(w.created_at))), 1) as mttrDays,
       COUNT(*) as workOrderCount
     FROM work_orders w JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' AND w.completed_date != '' AND w.created_at != ''
     GROUP BY w.asset_id ORDER BY mttrDays DESC
-  `).all() as { assetId: string; assetName: string; mttrDays: number; workOrderCount: number }[]);
+  `)).rows as unknown as { assetId: string; assetName: string; mttrDays: number; workOrderCount: number }[];
 
   // MTBF: days between first failure and now divided by failure count
-  const mtbf = (db.prepare(`
+  const mtbf = (await db.execute(`
     SELECT w.asset_id as assetId, a.name as assetName,
       CAST((julianday('now') - julianday(MIN(w.created_at))) / COUNT(*) AS INTEGER) as mtbfDays,
       COUNT(*) as failureCount
     FROM work_orders w JOIN assets a ON w.asset_id = a.id
     WHERE w.type IN ('corrective','emergency') GROUP BY w.asset_id HAVING COUNT(*) > 0
     ORDER BY mtbfDays ASC
-  `).all() as { assetId: string; assetName: string; mtbfDays: number; failureCount: number }[]);
+  `)).rows as unknown as { assetId: string; assetName: string; mtbfDays: number; failureCount: number }[];
 
   // Cost by asset
-  const costByAsset = (db.prepare(`
+  const costByAsset = (await db.execute(`
     SELECT w.asset_id as assetId, a.name as assetName,
       COALESCE(SUM(w.labor_hours), 0) * 75 as laborCost,
       COALESCE(SUM(w.parts_cost), 0) as partsCost,
       COALESCE(SUM(w.labor_hours), 0) * 75 + COALESCE(SUM(w.parts_cost), 0) as totalCost
     FROM work_orders w JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' GROUP BY w.asset_id ORDER BY totalCost DESC
-  `).all() as { assetId: string; assetName: string; laborCost: number; partsCost: number; totalCost: number }[]);
+  `)).rows as unknown as { assetId: string; assetName: string; laborCost: number; partsCost: number; totalCost: number }[];
 
   // PM Compliance
-  const pmStats = db.prepare(`
+  const pmStats = (await db.execute(`
     SELECT
       SUM(CASE WHEN next_due >= date('now') OR last_completed >= date('now','-7 days') THEN 1 ELSE 0 END) as completed,
       SUM(CASE WHEN next_due < date('now') AND active = 1 THEN 1 ELSE 0 END) as overdue,
       COUNT(*) as total
     FROM pm_schedules WHERE active = 1
-  `).get() as { completed: number; overdue: number; total: number };
+  `)).rows[0] as unknown as { completed: number; overdue: number; total: number };
   const complianceRate = pmStats.total > 0 ? Math.round((pmStats.completed / pmStats.total) * 100) : 100;
 
   // WO by status
-  const woByStatus = (db.prepare(`SELECT status, COUNT(*) as count FROM work_orders GROUP BY status`).all() as { status: string; count: number }[]);
+  const woByStatus = ((await db.execute(`SELECT status, COUNT(*) as count FROM work_orders GROUP BY status`)).rows as unknown as { status: string; count: number }[]);
 
   // WO by type
-  const woByType = (db.prepare(`SELECT type, COUNT(*) as count FROM work_orders GROUP BY type`).all() as { type: string; count: number }[]);
+  const woByType = ((await db.execute(`SELECT type, COUNT(*) as count FROM work_orders GROUP BY type`)).rows as unknown as { type: string; count: number }[]);
 
   // Monthly costs (last 6 months)
-  const monthlyCosts = (db.prepare(`
+  const monthlyCosts = ((await db.execute(`
     SELECT strftime('%Y-%m', completed_date) as month,
       COALESCE(SUM(labor_hours), 0) * 75 as labor,
       COALESCE(SUM(parts_cost), 0) as parts
     FROM work_orders WHERE status = 'completed' AND completed_date >= date('now','-6 months')
     GROUP BY month ORDER BY month
-  `).all() as { month: string; labor: number; parts: number }[]);
+  `)).rows as unknown as { month: string; labor: number; parts: number }[]);
 
   // Top cost assets
-  const topCostAssets = (db.prepare(`
+  const topCostAssets = ((await db.execute(`
     SELECT a.name, COALESCE(SUM(w.labor_hours),0)*75 + COALESCE(SUM(w.parts_cost),0) as total
     FROM work_orders w JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' GROUP BY w.asset_id ORDER BY total DESC LIMIT 5
-  `).all() as { name: string; total: number }[]);
+  `)).rows as unknown as { name: string; total: number }[]);
 
   // Inventory value
-  const invStats = db.prepare(`
+  const invStats = (await db.execute(`
     SELECT COUNT(*) as totalItems, COALESCE(SUM(quantity_on_hand * unit_cost), 0) as totalValue,
       SUM(CASE WHEN quantity_on_hand <= min_quantity AND min_quantity > 0 THEN 1 ELSE 0 END) as lowStockCount
     FROM inventory
-  `).get() as { totalItems: number; totalValue: number; lowStockCount: number };
+  `)).rows[0] as unknown as { totalItems: number; totalValue: number; lowStockCount: number };
 
   // YTD stats
-  const ytdStats = db.prepare(`
+  const ytdStats = (await db.execute(`
     SELECT COUNT(*) as totalWOs, COALESCE(SUM(labor_hours), 0) as totalLaborHours,
       COALESCE(SUM(parts_cost), 0) as totalPartsCost,
       ROUND(AVG(CASE WHEN completed_date != '' THEN julianday(completed_date) - julianday(created_at) END), 1) as avgResolutionDays
     FROM work_orders WHERE created_at >= date('now','start of year')
-  `).get() as { totalWOs: number; totalLaborHours: number; totalPartsCost: number; avgResolutionDays: number };
+  `)).rows[0] as unknown as { totalWOs: number; totalLaborHours: number; totalPartsCost: number; avgResolutionDays: number };
 
   // Compliance overdue count
-  const compOverdue = (db.prepare(`SELECT COUNT(*) as c FROM compliance_obligations WHERE next_due < date('now') AND status IN ('open','in_progress')`).get() as { c: number }).c;
-  const compTotal = (db.prepare('SELECT COUNT(*) as c FROM compliance_obligations').get() as { c: number }).c;
+  const compOverdue = ((await db.execute(`SELECT COUNT(*) as c FROM compliance_obligations WHERE next_due < date('now') AND status IN ('open','in_progress')`)).rows[0] as unknown as { c: number }).c;
+  const compTotal = ((await db.execute('SELECT COUNT(*) as c FROM compliance_obligations')).rows[0] as unknown as { c: number }).c;
 
   return {
     mttr, mtbf, costByAsset,
@@ -676,13 +730,14 @@ export function getAnalytics(): AnalyticsData {
     inventoryValue: invStats, ytdStats,
     complianceOverdue: compOverdue,
     complianceTotal: compTotal,
-    backlog: getBacklogAging(),
+    backlog: await getBacklogAging(),
   };
 }
 
 // ─── Sites ─────────────────────────────────────────────────────
-export function getSites(): Site[] {
-  return (getDb().prepare('SELECT * FROM sites ORDER BY river_mile').all() as Record<string, unknown>[]).map(r => ({
+export async function getSites(): Promise<Site[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM sites ORDER BY river_mile');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as string, name: r.name as string, fercNo: r.ferc_no as string,
     riverSystem: r.river_system as string, riverMile: r.river_mile as number,
     capacityMw: r.capacity_mw as string, county: r.county as string, state: r.state as string,
@@ -691,17 +746,17 @@ export function getSites(): Site[] {
   }));
 }
 
-export function upsertSite(site: Site): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO sites (id,name,ferc_no,river_system,river_mile,capacity_mw,county,state,operator,year_built,status,updated_at)
+export async function upsertSite(site: Site): Promise<void> {
+  await (await getDb()).execute({ sql: `INSERT INTO sites (id,name,ferc_no,river_system,river_mile,capacity_mw,county,state,operator,year_built,status,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name,ferc_no=excluded.ferc_no,river_system=excluded.river_system,river_mile=excluded.river_mile,capacity_mw=excluded.capacity_mw,county=excluded.county,state=excluded.state,operator=excluded.operator,year_built=excluded.year_built,status=excluded.status,updated_at=excluded.updated_at`)
-    .run(site.id, site.name, site.fercNo, site.riverSystem, site.riverMile, site.capacityMw, site.county, site.state, site.operator, site.yearBuilt, site.status);
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,ferc_no=excluded.ferc_no,river_system=excluded.river_system,river_mile=excluded.river_mile,capacity_mw=excluded.capacity_mw,county=excluded.county,state=excluded.state,operator=excluded.operator,year_built=excluded.year_built,status=excluded.status,updated_at=excluded.updated_at`,
+    args: [site.id, site.name, site.fercNo, site.riverSystem, site.riverMile, site.capacityMw, site.county, site.state, site.operator, site.yearBuilt, site.status] });
 }
 
 // ─── Compliance Obligations ────────────────────────────────────
-export function getComplianceObligations(): ComplianceObligation[] {
-  return (getDb().prepare('SELECT * FROM compliance_obligations ORDER BY next_due').all() as Record<string, unknown>[]).map(r => ({
+export async function getComplianceObligations(): Promise<ComplianceObligation[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM compliance_obligations ORDER BY next_due');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as string, siteId: (r.site_id ?? '') as string,
     obligationType: r.obligation_type as ComplianceObligation['obligationType'],
     title: r.title as string, description: r.description as string,
@@ -715,17 +770,17 @@ export function getComplianceObligations(): ComplianceObligation[] {
   }));
 }
 
-export function upsertComplianceObligation(o: ComplianceObligation): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO compliance_obligations (id,site_id,obligation_type,title,description,regulation_ref,frequency,last_completed,next_due,owner_role,evidence_required,status,priority,notes,updated_at)
+export async function upsertComplianceObligation(o: ComplianceObligation): Promise<void> {
+  await (await getDb()).execute({ sql: `INSERT INTO compliance_obligations (id,site_id,obligation_type,title,description,regulation_ref,frequency,last_completed,next_due,owner_role,evidence_required,status,priority,notes,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET obligation_type=excluded.obligation_type,title=excluded.title,description=excluded.description,regulation_ref=excluded.regulation_ref,frequency=excluded.frequency,last_completed=excluded.last_completed,next_due=excluded.next_due,owner_role=excluded.owner_role,evidence_required=excluded.evidence_required,status=excluded.status,priority=excluded.priority,notes=excluded.notes,updated_at=excluded.updated_at`)
-    .run(o.id, o.siteId || null, o.obligationType, o.title, o.description, o.regulationRef, o.frequency, o.lastCompleted, o.nextDue, o.ownerRole, o.evidenceRequired, o.status, o.priority, o.notes);
+    ON CONFLICT(id) DO UPDATE SET obligation_type=excluded.obligation_type,title=excluded.title,description=excluded.description,regulation_ref=excluded.regulation_ref,frequency=excluded.frequency,last_completed=excluded.last_completed,next_due=excluded.next_due,owner_role=excluded.owner_role,evidence_required=excluded.evidence_required,status=excluded.status,priority=excluded.priority,notes=excluded.notes,updated_at=excluded.updated_at`,
+    args: [o.id, o.siteId || null, o.obligationType, o.title, o.description, o.regulationRef, o.frequency, o.lastCompleted, o.nextDue, o.ownerRole, o.evidenceRequired, o.status, o.priority, o.notes] });
 }
 
 // ─── Inspections ───────────────────────────────────────────────
-export function getInspections(): Inspection[] {
-  return (getDb().prepare('SELECT * FROM inspections ORDER BY scheduled_date DESC').all() as Record<string, unknown>[]).map(r => ({
+export async function getInspections(): Promise<Inspection[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM inspections ORDER BY scheduled_date DESC');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as string, assetId: (r.asset_id ?? '') as string,
     complianceObligationId: (r.compliance_obligation_id ?? '') as string,
     inspectionType: r.inspection_type as Inspection['inspectionType'],
@@ -740,17 +795,17 @@ export function getInspections(): Inspection[] {
   }));
 }
 
-export function upsertInspection(i: Inspection): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO inspections (id,asset_id,compliance_obligation_id,inspection_type,title,description,scheduled_date,completed_date,inspector,findings,recommendations,corrective_actions,readings,photos,status,priority,updated_at)
+export async function upsertInspection(i: Inspection): Promise<void> {
+  await (await getDb()).execute({ sql: `INSERT INTO inspections (id,asset_id,compliance_obligation_id,inspection_type,title,description,scheduled_date,completed_date,inspector,findings,recommendations,corrective_actions,readings,photos,status,priority,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET inspection_type=excluded.inspection_type,title=excluded.title,description=excluded.description,scheduled_date=excluded.scheduled_date,completed_date=excluded.completed_date,inspector=excluded.inspector,findings=excluded.findings,recommendations=excluded.recommendations,corrective_actions=excluded.corrective_actions,readings=excluded.readings,photos=excluded.photos,status=excluded.status,priority=excluded.priority,updated_at=excluded.updated_at`)
-    .run(i.id, i.assetId || null, i.complianceObligationId || null, i.inspectionType, i.title, i.description, i.scheduledDate, i.completedDate, i.inspector, i.findings, i.recommendations, i.correctiveActions, i.readings, i.photos, i.status, i.priority);
+    ON CONFLICT(id) DO UPDATE SET inspection_type=excluded.inspection_type,title=excluded.title,description=excluded.description,scheduled_date=excluded.scheduled_date,completed_date=excluded.completed_date,inspector=excluded.inspector,findings=excluded.findings,recommendations=excluded.recommendations,corrective_actions=excluded.corrective_actions,readings=excluded.readings,photos=excluded.photos,status=excluded.status,priority=excluded.priority,updated_at=excluded.updated_at`,
+    args: [i.id, i.assetId || null, i.complianceObligationId || null, i.inspectionType, i.title, i.description, i.scheduledDate, i.completedDate, i.inspector, i.findings, i.recommendations, i.correctiveActions, i.readings, i.photos, i.status, i.priority] });
 }
 
 // ─── Documents ─────────────────────────────────────────────────
-export function getDocuments(): Document[] {
-  return (getDb().prepare('SELECT * FROM documents ORDER BY upload_date DESC').all() as Record<string, unknown>[]).map(r => ({
+export async function getDocuments(): Promise<Document[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM documents ORDER BY upload_date DESC');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as string, assetId: (r.asset_id ?? '') as string,
     documentType: r.document_type as Document['documentType'],
     title: r.title as string, description: r.description as string,
@@ -762,17 +817,17 @@ export function getDocuments(): Document[] {
   }));
 }
 
-export function upsertDocument(d: Document): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO documents (id,asset_id,document_type,title,description,file_path,file_url,version,uploaded_by,upload_date,review_due_date,tags,active,updated_at)
+export async function upsertDocument(d: Document): Promise<void> {
+  await (await getDb()).execute({ sql: `INSERT INTO documents (id,asset_id,document_type,title,description,file_path,file_url,version,uploaded_by,upload_date,review_due_date,tags,active,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET document_type=excluded.document_type,title=excluded.title,description=excluded.description,file_path=excluded.file_path,file_url=excluded.file_url,version=excluded.version,review_due_date=excluded.review_due_date,tags=excluded.tags,active=excluded.active,updated_at=excluded.updated_at`)
-    .run(d.id, d.assetId || null, d.documentType, d.title, d.description, d.filePath, d.fileUrl, d.version, d.uploadedBy, d.uploadDate, d.reviewDueDate || '', d.tags, d.active ? 1 : 0);
+    ON CONFLICT(id) DO UPDATE SET document_type=excluded.document_type,title=excluded.title,description=excluded.description,file_path=excluded.file_path,file_url=excluded.file_url,version=excluded.version,review_due_date=excluded.review_due_date,tags=excluded.tags,active=excluded.active,updated_at=excluded.updated_at`,
+    args: [d.id, d.assetId || null, d.documentType, d.title, d.description, d.filePath, d.fileUrl, d.version, d.uploadedBy, d.uploadDate, d.reviewDueDate || '', d.tags, d.active ? 1 : 0] });
 }
 
 // ─── Safety Permits ────────────────────────────────────────────
-export function getSafetyPermits(): SafetyPermit[] {
-  return (getDb().prepare('SELECT * FROM safety_permits ORDER BY issued_date DESC').all() as Record<string, unknown>[]).map(r => ({
+export async function getSafetyPermits(): Promise<SafetyPermit[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM safety_permits ORDER BY issued_date DESC');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as string, workOrderId: (r.work_order_id ?? '') as string, assetId: (r.asset_id ?? '') as string,
     permitType: r.permit_type as SafetyPermit['permitType'],
     permitNumber: r.permit_number as string, issuedBy: r.issued_by as string,
@@ -785,17 +840,17 @@ export function getSafetyPermits(): SafetyPermit[] {
   }));
 }
 
-export function upsertSafetyPermit(s: SafetyPermit): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO safety_permits (id,work_order_id,asset_id,permit_type,permit_number,issued_by,issued_date,expiry_date,status,description,hazards,precautions,approved_by,attachments,updated_at)
+export async function upsertSafetyPermit(s: SafetyPermit): Promise<void> {
+  await (await getDb()).execute({ sql: `INSERT INTO safety_permits (id,work_order_id,asset_id,permit_type,permit_number,issued_by,issued_date,expiry_date,status,description,hazards,precautions,approved_by,attachments,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET permit_type=excluded.permit_type,status=excluded.status,issued_by=excluded.issued_by,expiry_date=excluded.expiry_date,description=excluded.description,hazards=excluded.hazards,precautions=excluded.precautions,approved_by=excluded.approved_by,attachments=excluded.attachments,updated_at=excluded.updated_at`)
-    .run(s.id, s.workOrderId || null, s.assetId || null, s.permitType, s.permitNumber, s.issuedBy, s.issuedDate, s.expiryDate, s.status, s.description, s.hazards, s.precautions, s.approvedBy, s.attachments);
+    ON CONFLICT(id) DO UPDATE SET permit_type=excluded.permit_type,status=excluded.status,issued_by=excluded.issued_by,expiry_date=excluded.expiry_date,description=excluded.description,hazards=excluded.hazards,precautions=excluded.precautions,approved_by=excluded.approved_by,attachments=excluded.attachments,updated_at=excluded.updated_at`,
+    args: [s.id, s.workOrderId || null, s.assetId || null, s.permitType, s.permitNumber, s.issuedBy, s.issuedDate, s.expiryDate, s.status, s.description, s.hazards, s.precautions, s.approvedBy, s.attachments] });
 }
 
 // ─── Electrical Tests ──────────────────────────────────────────
-export function getElectricalTests(): ElectricalTest[] {
-  return (getDb().prepare('SELECT * FROM electrical_tests ORDER BY test_date DESC').all() as Record<string, unknown>[]).map(r => ({
+export async function getElectricalTests(): Promise<ElectricalTest[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM electrical_tests ORDER BY test_date DESC');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as string, assetId: (r.asset_id ?? '') as string,
     testType: r.test_type as ElectricalTest['testType'],
     testDate: r.test_date as string, results: r.results as string,
@@ -805,18 +860,16 @@ export function getElectricalTests(): ElectricalTest[] {
   }));
 }
 
-export function upsertElectricalTest(t: ElectricalTest): void {
-  const db = getDb();
-  db.prepare(`INSERT INTO electrical_tests (id,asset_id,test_type,test_date,results,next_due,tested_by,status,notes,updated_at)
+export async function upsertElectricalTest(t: ElectricalTest): Promise<void> {
+  await (await getDb()).execute({ sql: `INSERT INTO electrical_tests (id,asset_id,test_type,test_date,results,next_due,tested_by,status,notes,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET test_type=excluded.test_type,test_date=excluded.test_date,results=excluded.results,next_due=excluded.next_due,tested_by=excluded.tested_by,status=excluded.status,notes=excluded.notes,updated_at=excluded.updated_at`)
-    .run(t.id, t.assetId || null, t.testType, t.testDate, t.results, t.nextDue, t.testedBy, t.status, t.notes);
+    ON CONFLICT(id) DO UPDATE SET test_type=excluded.test_type,test_date=excluded.test_date,results=excluded.results,next_due=excluded.next_due,tested_by=excluded.tested_by,status=excluded.status,notes=excluded.notes,updated_at=excluded.updated_at`,
+    args: [t.id, t.assetId || null, t.testType, t.testDate, t.results, t.nextDue, t.testedBy, t.status, t.notes] });
 }
 
 // ─── Backlog aging (for dashboard / reports) ──────────────────
-export function getBacklogAging(): { aging: string; count: number; totalCost: number }[] {
-  const db = getDb();
-  return db.prepare(`
+export async function getBacklogAging(): Promise<{ aging: string; count: number; totalCost: number }[]> {
+  const rs = await (await getDb()).execute(`
     SELECT
       CASE
         WHEN julianday('now') - julianday(due_date) > 90 THEN '90+ days'
@@ -833,11 +886,12 @@ export function getBacklogAging(): { aging: string; count: number; totalCost: nu
         WHEN '90+ days' THEN 1 WHEN '30-90 days' THEN 2
         WHEN '7-30 days' THEN 3 WHEN '1-7 days' THEN 4 ELSE 5
       END
-  `).all() as { aging: string; count: number; totalCost: number }[];
+  `);
+  return rs.rows as unknown as { aging: string; count: number; totalCost: number }[];
 }
 
-export function deleteComplianceObligation(id: string): void { getDb().prepare('DELETE FROM compliance_obligations WHERE id = ?').run(id); }
-export function deleteInspection(id: string): void { getDb().prepare('DELETE FROM inspections WHERE id = ?').run(id); }
-export function deleteDocument(id: string): void { getDb().prepare('DELETE FROM documents WHERE id = ?').run(id); }
-export function deleteSafetyPermit(id: string): void { getDb().prepare('DELETE FROM safety_permits WHERE id = ?').run(id); }
-export function deleteElectricalTest(id: string): void { getDb().prepare('DELETE FROM electrical_tests WHERE id = ?').run(id); }
+export async function deleteComplianceObligation(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM compliance_obligations WHERE id = ?', args: [id] }); }
+export async function deleteInspection(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM inspections WHERE id = ?', args: [id] }); }
+export async function deleteDocument(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM documents WHERE id = ?', args: [id] }); }
+export async function deleteSafetyPermit(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM safety_permits WHERE id = ?', args: [id] }); }
+export async function deleteElectricalTest(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM electrical_tests WHERE id = ?', args: [id] }); }

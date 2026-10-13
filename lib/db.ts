@@ -1,16 +1,23 @@
-import Database from 'better-sqlite3';
+import { createClient, type Client } from '@libsql/client';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-function resolveDbPath(): string {
-  // Explicit override wins (deployments, tests, custom data locations).
-  if (process.env.OPS_CMMS_DB_PATH) return process.env.OPS_CMMS_DB_PATH;
-
-  // Serverless (Vercel): /tmp is the only writable location, and it is
-  // inherently ephemeral there.
-  if (process.env.VERCEL) return path.join('/tmp', 'ops-cmms-pro.db');
-
+// Resolve the database target:
+//  - TURSO_DATABASE_URL (+ TURSO_AUTH_TOKEN) -> remote libSQL/Turso (durable, serverless-safe)
+//  - OPS_CMMS_DB_PATH -> explicit local file override
+//  - Vercel without Turso env -> /tmp file (works, but ephemeral per instance)
+//  - otherwise -> persistent per-user data dir (self-hosted default)
+function resolveDbConfig(): { url: string; authToken?: string } {
+  if (process.env.TURSO_DATABASE_URL) {
+    return { url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN };
+  }
+  if (process.env.OPS_CMMS_DB_PATH) {
+    return { url: localUrl(process.env.OPS_CMMS_DB_PATH) };
+  }
+  if (process.env.VERCEL) {
+    return { url: localUrl(path.join(os.tmpdir(), 'ops-cmms-pro.db')) };
+  }
   // Self-hosted (dev or `next start`): keep the database OUTSIDE the project
   // tree so the dev server's file watcher never trips on SQLite WAL/SHM
   // churn, but in a persistent per-user directory so data survives reboots,
@@ -18,31 +25,82 @@ function resolveDbPath(): string {
   const base = process.platform === 'win32'
     ? process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
     : process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
-  return path.join(base, 'ops-cmms-pro', 'ops-cmms-pro.db');
+  return { url: localUrl(path.join(base, 'ops-cmms-pro', 'ops-cmms-pro.db')) };
 }
 
-const DB_PATH = resolveDbPath();
-let _db: Database.Database | null = null;
+function localUrl(filePath: string): string {
+  // libSQL local URLs need forward slashes, including on Windows.
+  return 'file:' + filePath.replace(/\\/g, '/');
+}
 
-export function getDb(): Database.Database {
-  if (!_db) {
-    const dir = path.dirname(DB_PATH);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    _db = new Database(DB_PATH);
-    _db.pragma('journal_mode = WAL');
-    _db.pragma('foreign_keys = ON');
-    initSchema(_db);
+let _ready: Promise<Client> | null = null;
+
+export function getDb(): Promise<Client> {
+  if (!_ready) {
+    _ready = initClient().catch(err => {
+      _ready = null; // allow a retry after a failed init
+      throw err;
+    });
   }
-  return _db;
+  return _ready;
 }
 
-function tableHasColumn(db: Database.Database, table: string, column: string): boolean {
-  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-  return rows.some(r => r.name === column);
+async function initClient(): Promise<Client> {
+  const cfg = resolveDbConfig();
+  const isFile = cfg.url.startsWith('file:');
+  if (!isFile && !cfg.authToken) {
+    throw new Error('TURSO_AUTH_TOKEN is required when TURSO_DATABASE_URL points to a remote database');
+  }
+  if (isFile) {
+    const dir = path.dirname(cfg.url.slice('file:'.length));
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  }
+  const client = createClient(cfg);
+  if (isFile) {
+    // Local file mode: keep WAL and FK enforcement to match previous behavior.
+    // Remote Turso manages journaling server-side; these pragmas are local-only.
+    await client.execute('PRAGMA journal_mode = WAL').catch(() => {});
+    await client.execute('PRAGMA foreign_keys = ON').catch(() => {});
+  }
+  await initSchema(client);
+  return client;
 }
 
-function initSchema(db: Database.Database): void {
-  db.exec(`
+async function tableHasColumn(db: Client, table: string, column: string): Promise<boolean> {
+  const rs = await db.execute(`PRAGMA table_info(${table})`);
+  return rs.rows.some(r => (r as unknown as { name: string }).name === column);
+}
+
+async function initSchema(db: Client): Promise<void> {
+  // Conditional ALTERs: append any columns that are missing from older databases.
+  const assetCols: Array<[string, string]> = [
+    ['parent_id', "ALTER TABLE assets ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''"],
+    ['area', "ALTER TABLE assets ADD COLUMN area TEXT NOT NULL DEFAULT ''"],
+    ['system', "ALTER TABLE assets ADD COLUMN system TEXT NOT NULL DEFAULT ''"],
+    ['ot_asset_type', "ALTER TABLE assets ADD COLUMN ot_asset_type TEXT NOT NULL DEFAULT ''"],
+    ['ip_address', "ALTER TABLE assets ADD COLUMN ip_address TEXT NOT NULL DEFAULT ''"],
+    ['firmware_version', "ALTER TABLE assets ADD COLUMN firmware_version TEXT NOT NULL DEFAULT ''"],
+    ['config_backup_date', "ALTER TABLE assets ADD COLUMN config_backup_date TEXT NOT NULL DEFAULT ''"],
+    ['patch_status', "ALTER TABLE assets ADD COLUMN patch_status TEXT NOT NULL DEFAULT ''"],
+    ['network_zone', "ALTER TABLE assets ADD COLUMN network_zone TEXT NOT NULL DEFAULT ''"],
+    ['regulatory_driver', "ALTER TABLE assets ADD COLUMN regulatory_driver TEXT NOT NULL DEFAULT ''"],
+    ['replacement_cost', 'ALTER TABLE assets ADD COLUMN replacement_cost REAL NOT NULL DEFAULT 0'],
+    ['failure_mode', "ALTER TABLE assets ADD COLUMN failure_mode TEXT NOT NULL DEFAULT ''"],
+    ['is_component', 'ALTER TABLE assets ADD COLUMN is_component INTEGER NOT NULL DEFAULT 0'],
+  ];
+  const pmCols: Array<[string, string]> = [
+    ['deferral_reason', "ALTER TABLE pm_schedules ADD COLUMN deferral_reason TEXT NOT NULL DEFAULT ''"],
+    ['deferral_approved_by', "ALTER TABLE pm_schedules ADD COLUMN deferral_approved_by TEXT NOT NULL DEFAULT ''"],
+  ];
+  let alters = '';
+  for (const [col, ddl] of assetCols) {
+    if (!(await tableHasColumn(db, 'assets', col))) alters += '    ' + ddl + ';\n';
+  }
+  for (const [col, ddl] of pmCols) {
+    if (!(await tableHasColumn(db, 'pm_schedules', col))) alters += '    ' + ddl + ';\n';
+  }
+
+  await db.executeMultiple(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -157,25 +215,7 @@ function initSchema(db: Database.Database): void {
     );
 
     -- Add parent_id to assets for hierarchy (skip if exists)
-    ${tableHasColumn(db, 'assets', 'parent_id') ? '' : 'ALTER TABLE assets ADD COLUMN parent_id TEXT NOT NULL DEFAULT \'\';'}
-    -- Add area / system to assets for hydro plant organization (skip if exists)
-    ${tableHasColumn(db, 'assets', 'area') ? '' : 'ALTER TABLE assets ADD COLUMN area TEXT NOT NULL DEFAULT \'\';'}
-    ${tableHasColumn(db, 'assets', 'system') ? '' : 'ALTER TABLE assets ADD COLUMN system TEXT NOT NULL DEFAULT \'\';'}
-    -- Add OT / cyber asset fields (skip if exists)
-    ${tableHasColumn(db, 'assets', 'ot_asset_type') ? '' : 'ALTER TABLE assets ADD COLUMN ot_asset_type TEXT NOT NULL DEFAULT \'\';'}
-    ${tableHasColumn(db, 'assets', 'ip_address') ? '' : 'ALTER TABLE assets ADD COLUMN ip_address TEXT NOT NULL DEFAULT \'\';'}
-    ${tableHasColumn(db, 'assets', 'firmware_version') ? '' : 'ALTER TABLE assets ADD COLUMN firmware_version TEXT NOT NULL DEFAULT \'\';'}
-    ${tableHasColumn(db, 'assets', 'config_backup_date') ? '' : 'ALTER TABLE assets ADD COLUMN config_backup_date TEXT NOT NULL DEFAULT \'\';'}
-    ${tableHasColumn(db, 'assets', 'patch_status') ? '' : 'ALTER TABLE assets ADD COLUMN patch_status TEXT NOT NULL DEFAULT \'\';'}
-    ${tableHasColumn(db, 'assets', 'network_zone') ? '' : 'ALTER TABLE assets ADD COLUMN network_zone TEXT NOT NULL DEFAULT \'\';'}
-    ${tableHasColumn(db, 'assets', 'regulatory_driver') ? '' : 'ALTER TABLE assets ADD COLUMN regulatory_driver TEXT NOT NULL DEFAULT \'\';'}
-    -- Add replacement cost, failure mode, component flag (skip if exists)
-    ${tableHasColumn(db, 'assets', 'replacement_cost') ? '' : 'ALTER TABLE assets ADD COLUMN replacement_cost REAL NOT NULL DEFAULT 0;'}
-    ${tableHasColumn(db, 'assets', 'failure_mode') ? '' : 'ALTER TABLE assets ADD COLUMN failure_mode TEXT NOT NULL DEFAULT \'\';'}
-    ${tableHasColumn(db, 'assets', 'is_component') ? '' : 'ALTER TABLE assets ADD COLUMN is_component INTEGER NOT NULL DEFAULT 0;'}
-    -- Add PM deferral fields (skip if exists)
-    ${tableHasColumn(db, 'pm_schedules', 'deferral_reason') ? '' : 'ALTER TABLE pm_schedules ADD COLUMN deferral_reason TEXT NOT NULL DEFAULT \'\';'}
-    ${tableHasColumn(db, 'pm_schedules', 'deferral_approved_by') ? '' : 'ALTER TABLE pm_schedules ADD COLUMN deferral_approved_by TEXT NOT NULL DEFAULT \'\';'}
+    ${alters}
 
     CREATE TABLE IF NOT EXISTS audit_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

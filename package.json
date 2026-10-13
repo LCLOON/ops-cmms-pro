@@ -9,10 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "@types/bcryptjs": "^2.4.6",
-    "@types/better-sqlite3": "^7.6.13",
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^12.11.1",
     "jose": "^6.2.3",
     "lucide-react": "^1.21.0",
     "next": "16.2.9",

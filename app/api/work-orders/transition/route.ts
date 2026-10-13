@@ -11,7 +11,7 @@ export async function POST(request: Request) {
     const { id, status } = await request.json();
     if (!id || !status) return NextResponse.json({ error: 'id and status required' }, { status: 400 });
 
-    const ok = transitionWorkOrderStatus(id, status);
+    const ok = await transitionWorkOrderStatus(id, status);
     if (!ok) return NextResponse.json({ error: 'Invalid status transition' }, { status: 400 });
 
     return NextResponse.json({ success: true, validTransitions: getValidStatusTransitions(status) });

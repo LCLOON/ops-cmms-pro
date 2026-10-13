@@ -9,7 +9,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const woId = searchParams.get('woId');
     if (!woId) return NextResponse.json({ error: 'woId required' }, { status: 400 });
-    return NextResponse.json(getWoParts(woId));
+    return NextResponse.json(await getWoParts(woId));
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -24,7 +24,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     if (!body.workOrderId || !body.inventoryItemId) return NextResponse.json({ error: 'workOrderId and inventoryItemId required' }, { status: 400 });
 
-    const part = addWoPart(body);
+    const part = await addWoPart(body);
     return NextResponse.json(part);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -39,7 +39,7 @@ export async function DELETE(request: Request) {
 
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
-    deleteWoPart(id);
+    await deleteWoPart(id);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

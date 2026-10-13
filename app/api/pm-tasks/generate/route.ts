@@ -11,7 +11,7 @@ export async function POST(request: Request) {
     const { pmId } = await request.json();
     if (!pmId) return NextResponse.json({ error: 'pmId required' }, { status: 400 });
 
-    const woId = generateWorkOrderFromPm(pmId, session.userId, session.displayName);
+    const woId = await generateWorkOrderFromPm(pmId, session.userId, session.displayName);
     if (!woId) return NextResponse.json({ error: 'PM schedule not found' }, { status: 404 });
 
     return NextResponse.json({ success: true, workOrderId: woId });

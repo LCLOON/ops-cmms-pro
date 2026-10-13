@@ -7,7 +7,7 @@ export async function GET() {
   try {
     const session = await getSession();
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    return NextResponse.json(getPmSchedules());
+    return NextResponse.json(await getPmSchedules());
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
 
     const id = body.id || 'PM-' + Date.now().toString(36).toUpperCase();
     const pm = { ...parsed.data, id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    upsertPmSchedule(pm);
+    await upsertPmSchedule(pm);
     return NextResponse.json(pm);
   } catch (err) {
     console.error('[api/pm-tasks POST]', err);
@@ -41,11 +41,11 @@ export async function PUT(request: Request) {
 
     const body = await request.json();
     if (!body.id) return NextResponse.json({ error: 'PM ID required' }, { status: 400 });
-    const existing = getPmSchedules().find(p => p.id === body.id);
+    const existing = (await getPmSchedules()).find(p => p.id === body.id);
     if (!existing) return NextResponse.json({ error: 'PM schedule not found' }, { status: 404 });
 
     const updated = { ...existing, ...body, updatedAt: new Date().toISOString() };
-    upsertPmSchedule(updated);
+    await upsertPmSchedule(updated);
     return NextResponse.json(updated);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -60,7 +60,7 @@ export async function DELETE(request: Request) {
 
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
-    deletePmSchedule(id);
+    await deletePmSchedule(id);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

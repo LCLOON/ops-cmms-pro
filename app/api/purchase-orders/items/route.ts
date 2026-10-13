@@ -9,7 +9,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const poId = searchParams.get('poId');
     if (!poId) return NextResponse.json({ error: 'poId required' }, { status: 400 });
-    return NextResponse.json(getPoItems(poId));
+    return NextResponse.json(await getPoItems(poId));
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -21,8 +21,8 @@ export async function POST(request: Request) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     if (session.role === 'viewer') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     const body = await request.json();
-    addPoItem(body);
-    return NextResponse.json(getPoItems(body.poId));
+    await addPoItem(body);
+    return NextResponse.json(await getPoItems(body.poId));
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -35,7 +35,7 @@ export async function DELETE(request: Request) {
     if (session.role === 'viewer') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
-    deletePoItem(id);
+    await deletePoItem(id);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

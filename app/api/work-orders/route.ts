@@ -7,7 +7,7 @@ export async function GET() {
   try {
     const session = await getSession();
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    return NextResponse.json(getWorkOrders());
+    return NextResponse.json(await getWorkOrders());
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
     const id = typeof requestedId === 'string' && requestedId.trim() ? requestedId : 'WO-' + Date.now().toString(36).toUpperCase();
     const now = new Date().toISOString();
     const wo = { ...parsed.data, id, completedDate: '', createdAt: now, updatedAt: now };
-    upsertWorkOrder(wo);
+    await upsertWorkOrder(wo);
     return NextResponse.json(wo);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -46,9 +46,9 @@ export async function PUT(request: Request) {
     }
     const parsed = workOrderSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });
-    const existing = getWorkOrder(body.id);
+    const existing = await getWorkOrder(body.id);
     if (!existing) return NextResponse.json({ error: 'Work order not found' }, { status: 404 });
-    upsertWorkOrder({ ...parsed.data, id: body.id, completedDate: existing.completedDate, createdAt: existing.createdAt, updatedAt: new Date().toISOString() });
+    await upsertWorkOrder({ ...parsed.data, id: body.id, completedDate: existing.completedDate, createdAt: existing.createdAt, updatedAt: new Date().toISOString() });
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -63,7 +63,7 @@ export async function DELETE(request: Request) {
 
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
-    deleteWorkOrder(id);
+    await deleteWorkOrder(id);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

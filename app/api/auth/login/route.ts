@@ -23,7 +23,7 @@ function checkRateLimit(ip: string): { allowed: boolean; retryAfterSec?: number 
 
 export async function POST(request: Request) {
   try {
-    seedDatabase();
+    await seedDatabase();
     const hdrs = await headers();
     const ip = getClientIp(hdrs) || 'unknown';
 
@@ -40,13 +40,13 @@ export async function POST(request: Request) {
     const username = parsed.data.username?.trim().toLowerCase();
     if (!username) return NextResponse.json({ error: 'Username required' }, { status: 400 });
 
-    const user = getUserByUsername(username);
+    const user = await getUserByUsername(username);
     if (!user) return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
 
     const valid = bcryptjs.compareSync(password, user.password_hash);
     if (!valid) return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
 
-    updateLastLogin(user.id);
+    await updateLastLogin(user.id);
     const session = { userId: user.id, username: user.username, displayName: user.display_name, role: user.role as 'admin' | 'manager' | 'technician' | 'viewer' };
     const token = await createSession(session);
     const cookie = sessionCookieOptions(token);

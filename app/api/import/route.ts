@@ -29,7 +29,7 @@ export async function POST(request: Request) {
           criticality: row.criticality || 'low', notes: row.notes || '',
           parentId: '', createdAt: now, updatedAt: now,
         };
-        upsertAsset(asset);
+        await upsertAsset(asset);
         imported++;
       }
     } else if (type === 'inventory') {
@@ -42,7 +42,7 @@ export async function POST(request: Request) {
           supplier: row.supplier || '', location: row.location || '',
           notes: row.notes || '', createdAt: now, updatedAt: now,
         };
-        upsertInventoryItem(item);
+        await upsertInventoryItem(item);
         imported++;
       }
     } else {

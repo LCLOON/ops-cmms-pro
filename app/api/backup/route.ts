@@ -7,14 +7,14 @@ export async function GET() {
     const session = await getSession();
     if (!session || session.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-    const db = getDb();
+    const db = await getDb();
     // Export all data as JSON
     const tables = ['users', 'site_config', 'assets', 'work_orders', 'pm_schedules', 'inventory', 'vendors', 'purchase_orders', 'po_items', 'wo_parts', 'wo_labor', 'meter_readings', 'audit_log'];
     const backup: Record<string, unknown[]> = {};
 
     for (const table of tables) {
       try {
-        backup[table] = (db.prepare(`SELECT * FROM ${table}`).all() as unknown[]);
+        backup[table] = (await db.execute(`SELECT * FROM ${table}`)).rows as unknown[];
       } catch { /* table may not exist */ }
     }
 
