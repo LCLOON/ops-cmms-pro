@@ -268,6 +268,7 @@ export interface SafetyPermit {
 
 export type ProcedureCategory = 'mechanical' | 'electrical' | 'hvac' | 'plumbing' | 'structural' | 'safety' | 'inspection' | 'other';
 export type ProcedureResponseType = 'checkbox' | 'reading' | 'pass_fail' | 'text';
+export type ProcedureStatus = 'draft' | 'approved' | 'retired';
 
 export interface ProcedureStep {
   id: number;
@@ -287,6 +288,9 @@ export interface Procedure {
   category: ProcedureCategory;
   assetId: string;
   version: string;
+  status: ProcedureStatus;
+  approvedBy: string;
+  approvedAt: string;
   active: boolean;
   stepCount?: number;
   steps?: ProcedureStep[];
@@ -294,10 +298,28 @@ export interface Procedure {
   updatedAt: string;
 }
 
+// Immutable snapshot of a procedure at a point in time (audit trail).
+export interface ProcedureRevision {
+  id: number;
+  procedureId: string;
+  revisionNo: number;
+  version: string;
+  title: string;
+  description: string;
+  category: ProcedureCategory;
+  assetId: string;
+  status: ProcedureStatus;
+  steps: ProcedureStep[];
+  changedBy: string;
+  changeNote: string;
+  createdAt: string;
+}
+
 export interface WoChecklistItem {
   id: number;
   workOrderId: string;
   procedureId: string;
+  sourceVersion: string;
   stepOrder: number;
   instruction: string;
   expectedResult: string;
@@ -307,6 +329,7 @@ export interface WoChecklistItem {
   completed: boolean;
   resultValue: string;
   resultStatus: '' | 'pass' | 'fail' | 'na';
+  followUpWoId: string;
   notes: string;
   completedBy: string;
   completedAt: string;

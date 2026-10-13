@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { getWoChecklist, applyProcedureToWorkOrder, updateWoChecklistItem, deleteWoChecklistItem } from '@/lib/operations';
+import { getWoChecklist, applyProcedureToWorkOrder, updateWoChecklistItem, deleteWoChecklistItem, getProcedure } from '@/lib/operations';
 
 export async function GET(request: Request) {
   try {
@@ -23,6 +23,12 @@ export async function POST(request: Request) {
     const body = await request.json();
     if (!body.workOrderId || !body.procedureId) {
       return NextResponse.json({ error: 'workOrderId and procedureId required' }, { status: 400 });
+    }
+    // Only approved, active SOPs may be applied — the UI filter is not a control.
+    const procedure = await getProcedure(body.procedureId);
+    if (!procedure) return NextResponse.json({ error: 'Procedure not found' }, { status: 404 });
+    if (procedure.status !== 'approved' || !procedure.active) {
+      return NextResponse.json({ error: 'Only approved, active procedures can be applied' }, { status: 400 });
     }
     const items = await applyProcedureToWorkOrder(body.workOrderId, body.procedureId, session.displayName);
     return NextResponse.json(items);

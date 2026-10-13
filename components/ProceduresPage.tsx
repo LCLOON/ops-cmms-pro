@@ -4,9 +4,10 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
-import { Plus, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, ChevronUp, ChevronDown, History, CheckCircle2, Archive } from 'lucide-react';
 
 type ResponseType = 'checkbox' | 'reading' | 'pass_fail' | 'text';
+type ProcedureStatus = 'draft' | 'approved' | 'retired';
 
 interface ProcedureStep {
   id: number;
@@ -26,6 +27,9 @@ interface Procedure {
   category: string;
   assetId: string;
   version: string;
+  status: ProcedureStatus;
+  approvedBy: string;
+  approvedAt: string;
   active: boolean;
   stepCount?: number;
   steps?: ProcedureStep[];
@@ -33,8 +37,27 @@ interface Procedure {
   updatedAt: string;
 }
 
+interface ProcedureRevision {
+  id: number;
+  procedureId: string;
+  revisionNo: number;
+  version: string;
+  title: string;
+  status: ProcedureStatus;
+  steps: ProcedureStep[];
+  changedBy: string;
+  changeNote: string;
+  createdAt: string;
+}
+
 const CATEGORIES = ['mechanical', 'electrical', 'hvac', 'plumbing', 'structural', 'safety', 'inspection', 'other'];
 const RESPONSE_TYPES: ResponseType[] = ['checkbox', 'reading', 'pass_fail', 'text'];
+
+const statusBadge: Record<ProcedureStatus, string> = {
+  draft: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+  approved: 'bg-green-500/20 text-green-400 border-green-500/30',
+  retired: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
+};
 
 const emptyStep = (order: number): ProcedureStep => ({
   id: 0, procedureId: '', stepOrder: order, instruction: '', expectedResult: '',
@@ -43,17 +66,22 @@ const emptyStep = (order: number): ProcedureStep => ({
 
 const defaultProcedure = (): Procedure => ({
   id: '', title: '', description: '', category: 'other', assetId: '', version: '1.0',
-  active: true, steps: [emptyStep(1)], createdAt: '', updatedAt: '',
+  status: 'draft', approvedBy: '', approvedAt: '', active: true,
+  steps: [emptyStep(1)], createdAt: '', updatedAt: '',
 });
 
 export default function ProceduresPage() {
-  const { canEdit, loading: authLoading } = useAuth();
+  const { canEdit, user, loading: authLoading } = useAuth();
+  const canApprove = !!user && (user.role === 'admin' || user.role === 'manager');
   const [items, setItems] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
   const [editItem, setEditItem] = useState<Procedure | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<Procedure>(defaultProcedure());
   const [saving, setSaving] = useState(false);
+  const [historyFor, setHistoryFor] = useState<Procedure | null>(null);
+  const [revisions, setRevisions] = useState<ProcedureRevision[]>([]);
+  const [loadingRevisions, setLoadingRevisions] = useState(false);
 
   const fetchItems = useCallback(() => {
     fetch('/api/procedures').then(r => r.json()).then(setItems).catch(() => {}).finally(() => setLoading(false));
@@ -79,6 +107,22 @@ export default function ProceduresPage() {
     } finally { setSaving(false); }
   };
 
+  const govern = async (item: Procedure, action: 'approve' | 'retire') => {
+    if (action === 'retire' && !confirm(`Retire procedure "${item.title}"? It will no longer be selectable on new work orders.`)) return;
+    const r = await fetch('/api/procedures', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: item.id, action }) });
+    if (!r.ok) { alert((await r.json()).error); return; }
+    fetchItems();
+  };
+
+  const openHistory = async (item: Procedure) => {
+    setHistoryFor(item);
+    setLoadingRevisions(true);
+    try {
+      const rows = await fetch(`/api/procedures?id=${encodeURIComponent(item.id)}&revisions=1`).then(r => r.json());
+      setRevisions(Array.isArray(rows) ? rows : []);
+    } finally { setLoadingRevisions(false); }
+  };
+
   const remove = async (item: Procedure) => {
     if (!confirm(`Delete procedure "${item.title}"? Work orders that already copied it keep their checklist.`)) return;
     await fetch('/api/procedures', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: item.id }) });
@@ -89,9 +133,22 @@ export default function ProceduresPage() {
     { key: 'title', header: 'Title' },
     { key: 'category', header: 'Category', render: p => <span className="capitalize">{p.category}</span> },
     { key: 'version', header: 'Version' },
+    { key: 'status', header: 'Status', render: p => (
+      <span className={`inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium border capitalize ${statusBadge[p.status] || statusBadge.draft}`}>{p.status}</span>
+    ) },
     { key: 'stepCount', header: 'Steps', render: p => <span className="font-mono">{p.stepCount ?? 0}</span> },
     { key: 'assetId', header: 'Asset', render: p => <span className="text-xs text-slate-400">{p.assetId || 'Any'}</span> },
-    { key: 'active', header: 'Active', render: p => <span className={`inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${p.active ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-slate-500/20 text-slate-400 border-slate-500/30'}`}>{p.active ? 'Yes' : 'No'}</span> },
+    { key: 'actions', header: '', render: p => (
+      <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+        <button onClick={() => openHistory(p)} title="Revision history" className="text-slate-400 hover:text-white"><History className="w-3.5 h-3.5" /></button>
+        {canApprove && p.status !== 'approved' && p.status !== 'retired' && (
+          <button onClick={() => govern(p, 'approve')} title="Approve" className="text-green-400 hover:text-green-300"><CheckCircle2 className="w-3.5 h-3.5" /></button>
+        )}
+        {canApprove && p.status !== 'retired' && (
+          <button onClick={() => govern(p, 'retire')} title="Retire" className="text-slate-400 hover:text-amber-400"><Archive className="w-3.5 h-3.5" /></button>
+        )}
+      </div>
+    ) },
   ];
 
   if (loading) return <div className="text-slate-400 p-8">Loading procedures...</div>;
@@ -99,13 +156,33 @@ export default function ProceduresPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-bold text-white">Procedures</h2>
-        <p className="text-slate-400 text-sm mt-1">Reusable SOPs. Attach one to a PM or copy it onto a work order as a checklist. Editing a procedure does not rewrite checklists already copied.</p>
+        <p className="text-slate-400 text-sm mt-1">Reusable SOPs with approval and a revision history. Only <span className="text-green-400">approved</span> procedures can be applied to a work order. Editing an approved procedure returns it to draft for re-approval; checklists already copied keep the version they were taken from.</p>
       </div>
       <DataTable data={items} columns={columns} onEdit={openEdit} onDelete={canEdit ? remove : undefined} onAdd={canEdit ? openNew : undefined}
         searchPlaceholder="Search procedures..." canEdit={canEdit} canDelete={canEdit} emptyMessage="No procedures yet." />
       {showForm && (
         <Modal open={showForm} onClose={() => setShowForm(false)} title={editItem ? `Edit procedure: ${editItem.id}` : 'New procedure'}>
           <ProcedureForm form={form} setForm={setForm} onSave={save} saving={saving} />
+        </Modal>
+      )}
+      {historyFor && (
+        <Modal open={!!historyFor} onClose={() => setHistoryFor(null)} title={`Revision history: ${historyFor.title}`}>
+          {loadingRevisions ? <p className="text-slate-400 text-sm">Loading revisions...</p> : revisions.length === 0 ? (
+            <p className="text-slate-500 text-sm">No revisions recorded yet.</p>
+          ) : (
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+              {revisions.map(rev => (
+                <div key={rev.id} className="border border-slate-800 rounded-lg p-3 bg-slate-950/40">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-white font-medium">Rev {rev.revisionNo} · v{rev.version}</span>
+                    <span className={`inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium border capitalize ${statusBadge[rev.status] || statusBadge.draft}`}>{rev.status}</span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">{rev.changeNote || 'No note'}</p>
+                  <p className="text-[10px] text-slate-500 mt-1">{rev.changedBy || 'unknown'} · {rev.createdAt} · {rev.steps.length} step(s)</p>
+                </div>
+              ))}
+            </div>
+          )}
         </Modal>
       )}
     </div>
@@ -145,6 +222,16 @@ function ProcedureForm({ form, setForm, onSave, saving }: {
           <label className="block text-xs text-slate-500 mb-1">Version</label>
           <input value={form.version} onChange={e => setForm({ ...form, version: e.target.value })}
             className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">Status</label>
+          <div className="flex items-center gap-2">
+            <span className={`inline-flex px-2 py-1 rounded-full text-[11px] font-medium border capitalize ${statusBadge[form.status] || statusBadge.draft}`}>{form.status}</span>
+            {form.status === 'approved' && form.approvedBy && (
+              <span className="text-[10px] text-slate-500">by {form.approvedBy}</span>
+            )}
+          </div>
+          <p className="text-[10px] text-slate-500 mt-1">Saving an approved procedure returns it to draft for re-approval.</p>
         </div>
         <div>
           <label className="block text-xs text-slate-500 mb-1">Asset ID (optional)</label>

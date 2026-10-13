@@ -3,7 +3,7 @@ import { type InStatement } from '@libsql/client';
 import bcryptjs from 'bcryptjs';
 import { generateHydroAssets, generateHydroInventory } from './hydro-seed';
 import { EXCEL_VENDORS } from './excel-vendors';
-import type { Asset, WorkOrder, PmSchedule, InventoryItem, SiteConfig, DbUser, WoPart, WoLabor, Vendor, PurchaseOrder, PoItem, MeterReading, Site, ComplianceObligation, Inspection, Document, SafetyPermit, ElectricalTest, Procedure, ProcedureStep, WoChecklistItem, ProcedureResponseType } from './types';
+import type { Asset, WorkOrder, PmSchedule, InventoryItem, SiteConfig, DbUser, WoPart, WoLabor, Vendor, PurchaseOrder, PoItem, MeterReading, Site, ComplianceObligation, Inspection, Document, SafetyPermit, ElectricalTest, Procedure, ProcedureStep, ProcedureRevision, WoChecklistItem, ProcedureResponseType } from './types';
 
 // ─── Helpers ───────────────────────────────────────────────────
 function nowIso(): string { return new Date().toISOString(); }
@@ -471,20 +471,24 @@ export function getValidStatusTransitions(status: string): string[] {
   return VALID_TRANSITIONS[status] || [];
 }
 
-export async function transitionWorkOrderStatus(id: string, newStatus: string): Promise<boolean> {
+export async function transitionWorkOrderStatus(id: string, newStatus: string): Promise<{ ok: boolean; error?: string }> {
   const db = await getDb();
   const rs = await db.execute({ sql: 'SELECT status FROM work_orders WHERE id = ?', args: [id] });
   const wo = rs.rows[0] as unknown as { status: string } | undefined;
-  if (!wo) return false;
+  if (!wo) return { ok: false, error: 'Work order not found' };
   const valid = VALID_TRANSITIONS[wo.status] || [];
-  if (!valid.includes(newStatus)) return false;
+  if (!valid.includes(newStatus)) return { ok: false, error: 'Invalid status transition' };
+  if (newStatus === 'completed') {
+    const blockers = await getCompletionBlockers(id);
+    if (blockers.length > 0) return { ok: false, error: `Cannot complete: ${blockers.join('; ')}` };
+  }
   const now = new Date().toISOString();
   if (newStatus === 'completed') {
     await db.execute({ sql: 'UPDATE work_orders SET status = ?, completed_date = ?, updated_at = ? WHERE id = ?', args: [newStatus, now, now, id] });
   } else {
     await db.execute({ sql: 'UPDATE work_orders SET status = ?, updated_at = ? WHERE id = ?', args: [newStatus, now, id] });
   }
-  return true;
+  return { ok: true };
 }
 
 // ─── PM → WO Generation ───────────────────────────────────────
@@ -917,6 +921,9 @@ function rowToProcedure(r: Record<string, unknown>): Procedure {
     category: r.category as Procedure['category'],
     assetId: (r.asset_id as string) || '',
     version: (r.version as string) || '1.0',
+    status: ((r.status as string) || 'draft') as Procedure['status'],
+    approvedBy: (r.approved_by as string) || '',
+    approvedAt: (r.approved_at as string) || '',
     active: !!(r.active as number),
     stepCount: Number(r.step_count ?? 0),
     createdAt: r.created_at as string,
@@ -924,8 +931,60 @@ function rowToProcedure(r: Record<string, unknown>): Procedure {
   };
 }
 
-export async function getProcedures(): Promise<Procedure[]> {
-  const rs = await (await getDb()).execute(`
+function rowToProcedureRevision(r: Record<string, unknown>): ProcedureRevision {
+  let steps: ProcedureStep[] = [];
+  try {
+    steps = JSON.parse((r.steps_json as string) || '[]') as ProcedureStep[];
+  } catch {
+    steps = [];
+  }
+  return {
+    id: r.id as number,
+    procedureId: r.procedure_id as string,
+    revisionNo: Number(r.revision_no ?? 1),
+    version: (r.version as string) || '1.0',
+    title: (r.title as string) || '',
+    description: (r.description as string) || '',
+    category: (r.category as string) as ProcedureRevision['category'],
+    assetId: (r.asset_id as string) || '',
+    status: ((r.status as string) || 'draft') as ProcedureRevision['status'],
+    steps,
+    changedBy: (r.changed_by as string) || '',
+    changeNote: (r.change_note as string) || '',
+    createdAt: r.created_at as string,
+  };
+}
+
+// Append an immutable snapshot of the procedure as it stands right now.
+async function appendProcedureRevision(p: Procedure, changedBy: string, changeNote: string): Promise<number> {
+  const db = await getDb();
+  const maxRs = await db.execute({ sql: 'SELECT COALESCE(MAX(revision_no),0) as m FROM procedure_revisions WHERE procedure_id = ?', args: [p.id] });
+  const revisionNo = Number((maxRs.rows[0] as unknown as { m: number }).m) + 1;
+  const steps = (p.steps || []).filter(s => s.instruction.trim()).map((s, i) => ({
+    id: 0, procedureId: p.id, stepOrder: s.stepOrder || i + 1, instruction: s.instruction.trim(),
+    expectedResult: s.expectedResult || '', responseType: s.responseType || 'checkbox', unit: s.unit || '', safetyNote: s.safetyNote || '',
+  }));
+  await db.execute({
+    sql: `INSERT INTO procedure_revisions (procedure_id,revision_no,version,title,description,category,asset_id,status,steps_json,changed_by,change_note)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    args: [p.id, revisionNo, p.version || '1.0', p.title, p.description || '', p.category, p.assetId || '', p.status || 'draft', JSON.stringify(steps), changedBy || '', changeNote || ''],
+  });
+  return revisionNo;
+}
+
+// Asset-scoped listing: an optional assetId returns procedures that target that
+// asset plus generic (asset-agnostic) procedures, so the picker is never empty.
+export async function getProcedures(assetId?: string): Promise<Procedure[]> {
+  const db = await getDb();
+  if (assetId) {
+    const rs = await db.execute({
+      sql: `SELECT p.*, (SELECT COUNT(*) FROM procedure_steps s WHERE s.procedure_id = p.id) AS step_count
+        FROM procedures p WHERE p.asset_id = '' OR p.asset_id = ? ORDER BY p.title`,
+      args: [assetId],
+    });
+    return (rs.rows as unknown as Record<string, unknown>[]).map(rowToProcedure);
+  }
+  const rs = await db.execute(`
     SELECT p.*, (SELECT COUNT(*) FROM procedure_steps s WHERE s.procedure_id = p.id) AS step_count
     FROM procedures p ORDER BY p.title
   `);
@@ -944,13 +1003,13 @@ export async function getProcedure(id: string): Promise<Procedure | null> {
   };
 }
 
-export async function upsertProcedure(p: Procedure): Promise<void> {
+export async function upsertProcedure(p: Procedure, changedBy = '', changeNote = ''): Promise<void> {
   const db = await getDb();
   await db.execute({
-    sql: `INSERT INTO procedures (id,title,description,category,asset_id,version,active,updated_at)
-      VALUES (?,?,?,?,?,?,?,datetime('now'))
-      ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,category=excluded.category,asset_id=excluded.asset_id,version=excluded.version,active=excluded.active,updated_at=excluded.updated_at`,
-    args: [p.id, p.title, p.description, p.category, p.assetId || '', p.version || '1.0', p.active ? 1 : 0],
+    sql: `INSERT INTO procedures (id,title,description,category,asset_id,version,status,approved_by,approved_at,active,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,category=excluded.category,asset_id=excluded.asset_id,version=excluded.version,status=excluded.status,approved_by=excluded.approved_by,approved_at=excluded.approved_at,active=excluded.active,updated_at=excluded.updated_at`,
+    args: [p.id, p.title, p.description, p.category, p.assetId || '', p.version || '1.0', p.status || 'draft', p.approvedBy || '', p.approvedAt || '', p.active ? 1 : 0],
   });
   await db.execute({ sql: 'DELETE FROM procedure_steps WHERE procedure_id = ?', args: [p.id] });
   const steps = p.steps || [];
@@ -963,11 +1022,36 @@ export async function upsertProcedure(p: Procedure): Promise<void> {
       args: [p.id, s.stepOrder || i + 1, s.instruction.trim(), s.expectedResult || '', s.responseType || 'checkbox', s.unit || '', s.safetyNote || ''],
     });
   }
+  await appendProcedureRevision(p, changedBy, changeNote);
+}
+
+// Approve a procedure: records the signer and timestamp, then logs a revision so
+// the approval itself is part of the immutable audit trail.
+export async function approveProcedure(id: string, approvedBy: string, changeNote = ''): Promise<Procedure | null> {
+  const existing = await getProcedure(id);
+  if (!existing) return null;
+  const now = new Date().toISOString();
+  const approved: Procedure = { ...existing, status: 'approved', approvedBy, approvedAt: now };
+  await upsertProcedure(approved, approvedBy, changeNote || `Approved v${approved.version}`);
+  return getProcedure(id);
+}
+
+export async function retireProcedure(id: string, changedBy: string): Promise<Procedure | null> {
+  const existing = await getProcedure(id);
+  if (!existing) return null;
+  await upsertProcedure({ ...existing, status: 'retired', active: false }, changedBy, 'Retired');
+  return getProcedure(id);
+}
+
+export async function getProcedureRevisions(procedureId: string): Promise<ProcedureRevision[]> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM procedure_revisions WHERE procedure_id = ? ORDER BY revision_no DESC', args: [procedureId] });
+  return (rs.rows as unknown as Record<string, unknown>[]).map(rowToProcedureRevision);
 }
 
 export async function deleteProcedure(id: string): Promise<void> {
   const db = await getDb();
   await db.execute({ sql: 'DELETE FROM procedure_steps WHERE procedure_id = ?', args: [id] });
+  await db.execute({ sql: 'DELETE FROM procedure_revisions WHERE procedure_id = ?', args: [id] });
   await db.execute({ sql: 'DELETE FROM procedures WHERE id = ?', args: [id] });
 }
 
@@ -976,6 +1060,7 @@ function rowToChecklistItem(r: Record<string, unknown>): WoChecklistItem {
     id: r.id as number,
     workOrderId: r.work_order_id as string,
     procedureId: (r.procedure_id as string) || '',
+    sourceVersion: (r.source_version as string) || '',
     stepOrder: r.step_order as number,
     instruction: r.instruction as string,
     expectedResult: (r.expected_result as string) || '',
@@ -985,6 +1070,7 @@ function rowToChecklistItem(r: Record<string, unknown>): WoChecklistItem {
     completed: !!(r.completed as number),
     resultValue: (r.result_value as string) || '',
     resultStatus: ((r.result_status as string) || '') as WoChecklistItem['resultStatus'],
+    followUpWoId: (r.follow_up_wo_id as string) || '',
     notes: (r.notes as string) || '',
     completedBy: (r.completed_by as string) || '',
     completedAt: (r.completed_at as string) || '',
@@ -998,6 +1084,14 @@ export async function getWoChecklist(workOrderId: string): Promise<WoChecklistIt
 
 export async function applyProcedureToWorkOrder(workOrderId: string, procedureId: string, username: string): Promise<WoChecklistItem[]> {
   const db = await getDb();
+  // The approved/active gate belongs in the data layer, not only the route: a
+  // PM-generated work order applies a procedure straight from
+  // pm_schedules.procedure_id, so without this a draft, retired, or inactive
+  // SOP would have its steps copied onto the work order.
+  const procRs = await db.execute({ sql: 'SELECT version, status, active FROM procedures WHERE id = ?', args: [procedureId] });
+  const procRow = procRs.rows[0] as unknown as { version: string; status: string; active: number } | undefined;
+  if (!procRow || procRow.status !== 'approved' || !procRow.active) return getWoChecklist(workOrderId);
+  const sourceVersion = procRow.version || '';
   const steps = await db.execute({ sql: 'SELECT * FROM procedure_steps WHERE procedure_id = ? ORDER BY step_order, id', args: [procedureId] });
   const maxRs = await db.execute({ sql: 'SELECT COALESCE(MAX(step_order),0) as m FROM wo_checklist_items WHERE work_order_id = ?', args: [workOrderId] });
   let order = Number((maxRs.rows[0] as unknown as { m: number }).m);
@@ -1005,13 +1099,60 @@ export async function applyProcedureToWorkOrder(workOrderId: string, procedureId
     const s = raw as unknown as { instruction: string; expected_result: string; response_type: string; unit: string; safety_note: string };
     order += 1;
     await db.execute({
-      sql: `INSERT INTO wo_checklist_items (work_order_id,procedure_id,step_order,instruction,expected_result,response_type,unit,safety_note)
-        VALUES (?,?,?,?,?,?,?,?)`,
-      args: [workOrderId, procedureId, order, s.instruction, s.expected_result || '', s.response_type || 'checkbox', s.unit || '', s.safety_note || ''],
+      sql: `INSERT INTO wo_checklist_items (work_order_id,procedure_id,source_version,step_order,instruction,expected_result,response_type,unit,safety_note)
+        VALUES (?,?,?,?,?,?,?,?,?)`,
+      args: [workOrderId, procedureId, sourceVersion, order, s.instruction, s.expected_result || '', s.response_type || 'checkbox', s.unit || '', s.safety_note || ''],
     });
   }
   void username;
   return getWoChecklist(workOrderId);
+}
+
+// Completion gate: a work order carrying a checklist cannot be closed while
+// steps are outstanding, or while a failed step has no corrective work order.
+// Returns the blocking reasons (empty array means the transition is allowed).
+export async function getCompletionBlockers(workOrderId: string): Promise<string[]> {
+  const items = await getWoChecklist(workOrderId);
+  if (items.length === 0) return [];
+  const incomplete = items.filter(i => !i.completed);
+  const failed = items.filter(i => i.resultStatus === 'fail' && !i.followUpWoId);
+  const blockers: string[] = [];
+  if (incomplete.length > 0) blockers.push(`${incomplete.length} checklist step(s) not yet completed`);
+  if (failed.length > 0) blockers.push(`${failed.length} failed step(s) with no follow-up work order`);
+  return blockers;
+}
+
+// Raise a corrective work order from a failed checklist step and link it back so
+// the failure is traceable and the completion gate can be satisfied.
+export async function createFollowUpWorkOrder(checklistItemId: number, username: string): Promise<string | null> {
+  const db = await getDb();
+  const rs = await db.execute({ sql: 'SELECT * FROM wo_checklist_items WHERE id = ?', args: [checklistItemId] });
+  const item = rs.rows[0] as unknown as Record<string, unknown> | undefined;
+  if (!item) return null;
+  const existing = (item.follow_up_wo_id as string) || '';
+  if (existing) return existing;
+  const parentRs = await db.execute({ sql: 'SELECT * FROM work_orders WHERE id = ?', args: [item.work_order_id as string] });
+  const parent = parentRs.rows[0] as unknown as Record<string, unknown> | undefined;
+  const woId = 'WO-' + Date.now().toString(36).toUpperCase();
+  const now = new Date().toISOString();
+  const instruction = (item.instruction as string) || 'Checklist step';
+  await db.execute({
+    sql: `INSERT INTO work_orders (id, asset_id, title, description, type, priority, status, assigned_to, requested_by, due_date, created_at, updated_at)
+      VALUES (?,?,?,?,'corrective','high','open',?,?,?,?,?)`,
+    args: [
+      woId,
+      (parent?.asset_id as string) || '',
+      `Follow-up: ${instruction}`.slice(0, 120),
+      `Raised from failed checklist step on ${item.work_order_id as string}. Result: ${(item.result_value as string) || 'n/a'}${item.notes ? ` — ${item.notes as string}` : ''}`,
+      (parent?.assigned_to as string) || '',
+      username || 'Checklist',
+      now.slice(0, 10),
+      now,
+      now,
+    ],
+  });
+  await db.execute({ sql: 'UPDATE wo_checklist_items SET follow_up_wo_id = ? WHERE id = ?', args: [woId, checklistItemId] });
+  return woId;
 }
 
 export async function updateWoChecklistItem(item: { id: number; completed: boolean; resultValue: string; resultStatus: string; notes: string; completedBy: string }): Promise<void> {

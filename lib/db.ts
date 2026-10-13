@@ -93,12 +93,29 @@ async function initSchema(db: Client): Promise<void> {
     ['deferral_approved_by', "ALTER TABLE pm_schedules ADD COLUMN deferral_approved_by TEXT NOT NULL DEFAULT ''"],
     ['procedure_id', "ALTER TABLE pm_schedules ADD COLUMN procedure_id TEXT NOT NULL DEFAULT ''"],
   ];
+  // Governance columns for the SOP library: lifecycle status plus who signed off.
+  const procedureCols: Array<[string, string]> = [
+    ['status', "ALTER TABLE procedures ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'"],
+    ['approved_by', "ALTER TABLE procedures ADD COLUMN approved_by TEXT NOT NULL DEFAULT ''"],
+    ['approved_at', "ALTER TABLE procedures ADD COLUMN approved_at TEXT NOT NULL DEFAULT ''"],
+  ];
+  // Links a failed checklist step to the corrective work order it spawned.
+  const checklistCols: Array<[string, string]> = [
+    ['follow_up_wo_id', "ALTER TABLE wo_checklist_items ADD COLUMN follow_up_wo_id TEXT NOT NULL DEFAULT ''"],
+    ['source_version', "ALTER TABLE wo_checklist_items ADD COLUMN source_version TEXT NOT NULL DEFAULT ''"],
+  ];
   let alters = '';
   for (const [col, ddl] of assetCols) {
     if (!(await tableHasColumn(db, 'assets', col))) alters += '    ' + ddl + ';\n';
   }
   for (const [col, ddl] of pmCols) {
     if (!(await tableHasColumn(db, 'pm_schedules', col))) alters += '    ' + ddl + ';\n';
+  }
+  for (const [col, ddl] of procedureCols) {
+    if (!(await tableHasColumn(db, 'procedures', col))) alters += '    ' + ddl + ';\n';
+  }
+  for (const [col, ddl] of checklistCols) {
+    if (!(await tableHasColumn(db, 'wo_checklist_items', col))) alters += '    ' + ddl + ';\n';
   }
 
   await db.executeMultiple(`
@@ -398,6 +415,9 @@ async function initSchema(db: Client): Promise<void> {
       category TEXT NOT NULL DEFAULT 'other' CHECK(category IN ('mechanical','electrical','hvac','plumbing','structural','safety','inspection','other')),
       asset_id TEXT NOT NULL DEFAULT '',
       version TEXT NOT NULL DEFAULT '1.0',
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','approved','retired')),
+      approved_by TEXT NOT NULL DEFAULT '',
+      approved_at TEXT NOT NULL DEFAULT '',
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -414,11 +434,30 @@ async function initSchema(db: Client): Promise<void> {
       safety_note TEXT NOT NULL DEFAULT ''
     );
 
+    -- Immutable revision log. Every save appends a snapshot so you can prove
+    -- which revision of the SOP was in force on any given date (audit trail).
+    CREATE TABLE IF NOT EXISTS procedure_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      procedure_id TEXT NOT NULL,
+      revision_no INTEGER NOT NULL DEFAULT 1,
+      version TEXT NOT NULL DEFAULT '1.0',
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'other',
+      asset_id TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      steps_json TEXT NOT NULL DEFAULT '[]',
+      changed_by TEXT NOT NULL DEFAULT '',
+      change_note TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- Snapshot copied onto a work order when a procedure is applied.
     CREATE TABLE IF NOT EXISTS wo_checklist_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       work_order_id TEXT NOT NULL REFERENCES work_orders(id) ON DELETE CASCADE,
       procedure_id TEXT NOT NULL DEFAULT '',
+      source_version TEXT NOT NULL DEFAULT '',
       step_order INTEGER NOT NULL DEFAULT 1,
       instruction TEXT NOT NULL,
       expected_result TEXT NOT NULL DEFAULT '',
@@ -428,9 +467,51 @@ async function initSchema(db: Client): Promise<void> {
       completed INTEGER NOT NULL DEFAULT 0,
       result_value TEXT NOT NULL DEFAULT '',
       result_status TEXT NOT NULL DEFAULT '' CHECK(result_status IN ('','pass','fail','na')),
+      follow_up_wo_id TEXT NOT NULL DEFAULT '',
       notes TEXT NOT NULL DEFAULT '',
       completed_by TEXT NOT NULL DEFAULT '',
       completed_at TEXT NOT NULL DEFAULT ''
     );
   `);
+
+  await backfillProcedureGovernance(db);
+}
+
+// One-time migration for databases created before procedure governance existed.
+// Legacy procedures have no revision history and no approval record; without
+// this they would default to 'draft' and vanish from every procedure picker.
+// Rows that already carry a revision are left untouched.
+async function backfillProcedureGovernance(db: Client): Promise<void> {
+  const legacy = await db.execute(`
+    SELECT p.id, p.title, p.description, p.category, p.asset_id, p.version, p.status
+    FROM procedures p
+    WHERE NOT EXISTS (SELECT 1 FROM procedure_revisions r WHERE r.procedure_id = p.id)
+  `);
+  if (legacy.rows.length === 0) return;
+  const now = new Date().toISOString();
+  for (const raw of legacy.rows) {
+    const p = raw as unknown as { id: string; title: string; description: string; category: string; asset_id: string; version: string; status: string };
+    const steps = await db.execute({
+      sql: 'SELECT step_order, instruction, expected_result, response_type, unit, safety_note FROM procedure_steps WHERE procedure_id = ? ORDER BY step_order, id',
+      args: [p.id],
+    });
+    const snapshot = steps.rows.map((r, i) => {
+      const s = r as unknown as { step_order: number; instruction: string; expected_result: string; response_type: string; unit: string; safety_note: string };
+      return {
+        id: 0, procedureId: p.id, stepOrder: s.step_order || i + 1, instruction: s.instruction,
+        expectedResult: s.expected_result || '', responseType: s.response_type || 'checkbox',
+        unit: s.unit || '', safetyNote: s.safety_note || '',
+      };
+    });
+    // Preserve prior behaviour: everything that existed before governance was in use.
+    await db.execute({
+      sql: "UPDATE procedures SET status = 'approved', approved_by = 'migrated', approved_at = ? WHERE id = ?",
+      args: [now, p.id],
+    });
+    await db.execute({
+      sql: `INSERT INTO procedure_revisions (procedure_id,revision_no,version,title,description,category,asset_id,status,steps_json,changed_by,change_note)
+        VALUES (?,1,?,?,?,?,?,'approved',?,'migrated','Migrated: pre-governance procedure')`,
+      args: [p.id, p.version || '1.0', p.title, p.description || '', p.category, p.asset_id || '', JSON.stringify(snapshot)],
+    });
+  }
 }

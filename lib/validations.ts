@@ -66,6 +66,9 @@ export const procedureSchema = z.object({
   category: z.enum(['mechanical', 'electrical', 'hvac', 'plumbing', 'structural', 'safety', 'inspection', 'other']).default('other'),
   assetId: z.string().default(''),
   version: z.string().default('1.0'),
+  status: z.enum(['draft', 'approved', 'retired']).default('draft'),
+  approvedBy: z.string().default(''),
+  approvedAt: z.string().default(''),
   active: z.boolean().default(true),
   steps: z.array(procedureStepSchema).default([]),
 });

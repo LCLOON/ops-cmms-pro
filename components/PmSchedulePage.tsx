@@ -115,9 +115,10 @@ export default function PmSchedulePage() {
 function PMForm({ form, setForm, onSave, saving, onClose }: {
   form: PmSchedule; setForm: (f: PmSchedule) => void; onSave: () => void; saving: boolean; onClose: () => void;
 }) {
-  const [procedures, setProcedures] = useState<{ id: string; title: string; version: string; active: boolean }[]>([]);
+  const [procedures, setProcedures] = useState<{ id: string; title: string; version: string; active: boolean; status: string }[]>([]);
   useEffect(() => {
-    fetch('/api/procedures').then(r => r.json()).then((rows: { id: string; title: string; version: string; active: boolean }[]) => setProcedures(rows.filter(p => p.active))).catch(() => {});
+    // Only approved, active SOPs may be attached to a PM schedule.
+    fetch('/api/procedures').then(r => r.json()).then((rows: { id: string; title: string; version: string; active: boolean; status: string }[]) => setProcedures(rows.filter(p => p.active && p.status === 'approved'))).catch(() => {});
   }, []);
   const update = (k: keyof PmSchedule, v: string | number | boolean) => setForm({ ...form, [k]: v });
   const field = (label: string, key: keyof PmSchedule, type = 'text') => (

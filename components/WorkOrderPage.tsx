@@ -141,7 +141,12 @@ function WOForm({ form, setForm, onSave, saving, isEdit }: { form: WorkOrder; se
             {field('Title', 'title')}{field('Asset ID', 'assetId')}
             {select('Type', 'type', ['corrective','preventive','predictive','emergency','inspection'])}
             {select('Priority', 'priority', ['critical','high','medium','low'])}
-            {select('Status', 'status', ['open','in_progress','on_hold','completed','cancelled'])}
+            {/* Completing a work order is gated on its checklist, so it is not
+                offered as a plain field edit — the API rejects it here. Use the
+                status transition control in the list instead. Keep it visible
+                for a work order that is already completed so the value is not
+                silently rewritten on save. */}
+            {select('Status', 'status', ['open','in_progress','on_hold', ...(form.status === 'completed' ? ['completed'] : []), 'cancelled'])}
             {field('Assigned To', 'assignedTo')}{field('Requested By', 'requestedBy')}
             {field('Due Date', 'dueDate', 'date')}{field('Completed Date', 'completedDate', 'date')}
           </div>
@@ -151,7 +156,7 @@ function WOForm({ form, setForm, onSave, saving, isEdit }: { form: WorkOrder; se
             <textarea value={form.resolution} onChange={e => update('resolution', e.target.value)} rows={2} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /></div>
         </div>
       )}
-      {tab === 'checklist' && isEdit && <ChecklistPanel workOrderId={form.id} />}
+      {tab === 'checklist' && isEdit && <ChecklistPanel workOrderId={form.id} assetId={form.assetId} />}
       {tab === 'checklist' && !isEdit && <p className="text-slate-500 text-sm py-4">Save the work order first to apply a procedure checklist.</p>}
       {tab === 'parts' && isEdit && <PartsPanel workOrderId={form.id} />}
       {tab === 'parts' && !isEdit && <p className="text-slate-500 text-sm py-4">Save the work order first to add parts.</p>}
@@ -163,26 +168,29 @@ function WOForm({ form, setForm, onSave, saving, isEdit }: { form: WorkOrder; se
       </div>
     </div>);
 interface ChecklistItem {
-  id: number; workOrderId: string; procedureId: string; stepOrder: number;
+  id: number; workOrderId: string; procedureId: string; sourceVersion: string; stepOrder: number;
   instruction: string; expectedResult: string; responseType: 'checkbox' | 'reading' | 'pass_fail' | 'text';
   unit: string; safetyNote: string; completed: boolean; resultValue: string;
-  resultStatus: '' | 'pass' | 'fail' | 'na'; notes: string; completedBy: string; completedAt: string;
+  resultStatus: '' | 'pass' | 'fail' | 'na'; followUpWoId: string; notes: string; completedBy: string; completedAt: string;
 }
-interface ProcedureOption { id: string; title: string; version: string; stepCount?: number; active: boolean; }
+interface ProcedureOption { id: string; title: string; version: string; stepCount?: number; active: boolean; status: string; assetId: string; }
 
-function ChecklistPanel({ workOrderId }: { workOrderId: string }) {
+function ChecklistPanel({ workOrderId, assetId }: { workOrderId: string; assetId: string }) {
   const [items, setItems] = useState<ChecklistItem[]>([]);
   const [procedures, setProcedures] = useState<ProcedureOption[]>([]);
   const [procedureId, setProcedureId] = useState('');
   const [applying, setApplying] = useState(false);
+  const [followUpBusy, setFollowUpBusy] = useState<number | null>(null);
 
   const fetchItems = useCallback(() => {
     fetch(`/api/work-orders/checklist?woId=${workOrderId}`).then(r => r.json()).then(setItems).catch(() => {});
   }, [workOrderId]);
   useEffect(() => {
     fetchItems();
-    fetch('/api/procedures').then(r => r.json()).then((rows: ProcedureOption[]) => setProcedures(rows.filter(p => p.active))).catch(() => {});
-  }, [fetchItems]);
+    // Only approved, active SOPs for this asset (or generic ones) may be applied.
+    const qs = assetId ? `?assetId=${encodeURIComponent(assetId)}` : '';
+    fetch(`/api/procedures${qs}`).then(r => r.json()).then((rows: ProcedureOption[]) => setProcedures(rows.filter(p => p.active && p.status === 'approved'))).catch(() => {});
+  }, [fetchItems, assetId]);
 
   const apply = async () => {
     if (!procedureId) return;
@@ -193,6 +201,16 @@ function ChecklistPanel({ workOrderId }: { workOrderId: string }) {
       setItems(await r.json());
       setProcedureId('');
     } finally { setApplying(false); }
+  };
+
+  const createFollowUp = async (item: ChecklistItem) => {
+    setFollowUpBusy(item.id);
+    try {
+      const r = await fetch('/api/work-orders/checklist/follow-up', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checklistItemId: item.id }) });
+      if (!r.ok) { alert((await r.json()).error); return; }
+      const { workOrderId: newId } = await r.json();
+      setItems(prev => prev.map(i => i.id === item.id ? { ...i, followUpWoId: newId } : i));
+    } finally { setFollowUpBusy(null); }
   };
 
   const saveItem = async (item: ChecklistItem, patch: Partial<ChecklistItem>) => {
@@ -208,6 +226,7 @@ function ChecklistPanel({ workOrderId }: { workOrderId: string }) {
     fetchItems();
   };
   const done = items.filter(i => i.completed).length;
+  const failedOpen = items.filter(i => i.resultStatus === 'fail' && !i.followUpWoId).length;
 
   return (
     <div className="space-y-3">
@@ -215,6 +234,11 @@ function ChecklistPanel({ workOrderId }: { workOrderId: string }) {
         <h4 className="text-sm font-semibold text-white">Checklist ({done}/{items.length})</h4>
         <span className="text-xs text-slate-500">Copied from the procedure. Later SOP edits do not change this work order.</span>
       </div>
+      {failedOpen > 0 && (
+        <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+          {failedOpen} failed step(s) need a follow-up work order before this work order can be completed.
+        </div>
+      )}
       {items.length > 0 ? items.map(item => (
         <div key={item.id} className={`border rounded-lg p-3 space-y-2 ${item.completed ? 'border-green-500/30 bg-green-500/5' : 'border-slate-800'}`}>
           <div className="flex items-start gap-2">
@@ -223,6 +247,7 @@ function ChecklistPanel({ workOrderId }: { workOrderId: string }) {
               <p className="text-sm text-white">{item.stepOrder}. {item.instruction}</p>
               {item.expectedResult && <p className="text-xs text-slate-500">Expected: {item.expectedResult}{item.unit ? ` ${item.unit}` : ''}</p>}
               {item.safetyNote && <p className="text-xs text-amber-400">Safety: {item.safetyNote}</p>}
+              {item.sourceVersion && <p className="text-[10px] text-slate-500">From SOP {item.procedureId} v{item.sourceVersion}</p>}
             </div>
             <button onClick={() => removeItem(item.id)} className="text-slate-500 hover:text-red-400" aria-label="Remove step"><Trash2 className="w-3.5 h-3.5" /></button>
           </div>
@@ -244,13 +269,23 @@ function ChecklistPanel({ workOrderId }: { workOrderId: string }) {
               className="col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
           {item.completedBy && <p className="text-[10px] text-slate-500 pl-6">{item.completedBy} · {item.completedAt}</p>}
+          {item.resultStatus === 'fail' && (
+            item.followUpWoId ? (
+              <p className="text-[10px] text-green-400 pl-6">Follow-up work order: {item.followUpWoId}</p>
+            ) : (
+              <button onClick={() => createFollowUp(item)} disabled={followUpBusy === item.id}
+                className="ml-6 text-[11px] bg-red-600/20 hover:bg-red-600/30 disabled:opacity-50 text-red-300 border border-red-500/30 rounded px-2 py-1 transition-colors">
+                {followUpBusy === item.id ? 'Creating...' : 'Create follow-up work order'}
+              </button>
+            )
+          )}
         </div>
       )) : <p className="text-slate-500 text-sm">No checklist yet. Apply a procedure below.</p>}
       <div className="flex items-end gap-2 pt-2">
         <div className="flex-1">
           <label className="block text-xs text-slate-500 mb-1">Apply procedure</label>
           <select value={procedureId} onChange={e => setProcedureId(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">Select procedure...</option>
+            <option value="">{procedures.length ? 'Select procedure...' : 'No approved procedures for this asset'}</option>
             {procedures.map(p => <option key={p.id} value={p.id}>{p.title} v{p.version} ({p.stepCount ?? 0} steps)</option>)}
           </select>
         </div>
