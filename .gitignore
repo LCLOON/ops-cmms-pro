@@ -52,3 +52,5 @@ lint-status.json
 *.db
 *.db-wal
 *.db-shm
+
+.vercel
