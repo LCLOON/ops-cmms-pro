@@ -39,3 +39,16 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# lint/typecheck scratch reports
+.eslint-out.json
+eslint-report.json
+lint.json
+lint-now.json
+lint-check.json
+lint-status.json
+
+# local sqlite databases
+*.db
+*.db-wal
+*.db-shm
