@@ -1,10 +1,10 @@
 'use client';
 
 import React from 'react';
-import { LayoutDashboard, Wrench, ClipboardList, CalendarCheck, Package, LogOut, Building2, ShoppingCart, ShieldCheck, FileText, HardHat, Search, BarChart3, Settings, Zap } from 'lucide-react';
+import { LayoutDashboard, Wrench, ClipboardList, CalendarCheck, Package, LogOut, Building2, ShoppingCart, ShieldCheck, FileText, HardHat, Search, BarChart3, Settings, Zap, Sparkles, CircleHelp, ListChecks } from 'lucide-react';
 import { useAuth } from './AuthContext';
 
-type Page = 'dashboard' | 'assets' | 'work-orders' | 'pm-schedule' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'electrical';
+type Page = 'dashboard' | 'assets' | 'work-orders' | 'pm-schedule' | 'procedures' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'electrical' | 'advisor' | 'help';
 
 interface Props { active: Page; onNavigate: (p: Page) => void; mobileOpen?: boolean; onToggleMobile?: () => void; }
 
@@ -16,6 +16,7 @@ export default function Sidebar({ active, onNavigate, mobileOpen, onToggleMobile
     { id: 'assets', label: 'Assets', icon: <Wrench className="w-5 h-5" /> },
     { id: 'work-orders', label: 'Work Orders', icon: <ClipboardList className="w-5 h-5" /> },
     { id: 'pm-schedule', label: 'PM Schedule', icon: <CalendarCheck className="w-5 h-5" /> },
+    { id: 'procedures', label: 'Procedures', icon: <ListChecks className="w-5 h-5" /> },
     { id: 'inventory', label: 'Inventory', icon: <Package className="w-5 h-5" /> },
     { id: 'vendors', label: 'Vendors', icon: <Building2 className="w-5 h-5" /> },
     { id: 'purchase-orders', label: 'Purchase Orders', icon: <ShoppingCart className="w-5 h-5" /> },
@@ -24,8 +25,10 @@ export default function Sidebar({ active, onNavigate, mobileOpen, onToggleMobile
     { id: 'safety', label: 'Safety', icon: <HardHat className="w-5 h-5" /> },
     { id: 'inspections', label: 'Inspections', icon: <Search className="w-5 h-5" /> },
     { id: 'reports', label: 'Reports', icon: <BarChart3 className="w-5 h-5" /> },
-    { id: 'admin', label: 'Admin', icon: <Settings className="w-5 h-5" /> },
     { id: 'electrical', label: 'Electrical', icon: <Zap className="w-5 h-5" /> },
+    { id: 'advisor', label: 'AI Advisor', icon: <Sparkles className="w-5 h-5" /> },
+    { id: 'help', label: 'Help', icon: <CircleHelp className="w-5 h-5" /> },
+    { id: 'admin', label: 'Admin', icon: <Settings className="w-5 h-5" /> },
   ];
 
   const nav = (

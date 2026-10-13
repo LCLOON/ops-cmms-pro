@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
-import { Trash2, Plus, Package, Clock } from 'lucide-react';
+import { Trash2, Plus, Package, Clock, ListChecks } from 'lucide-react';
 
 interface WorkOrder {
   id: string; assetId: string; title: string; description: string;
@@ -113,7 +113,7 @@ export default function WorkOrderPage() {
 }
 
 function WOForm({ form, setForm, onSave, saving, isEdit }: { form: WorkOrder; setForm: (f: WorkOrder) => void; onSave: () => void; saving: boolean; isEdit: boolean; }) {
-  const [tab, setTab] = useState<'details' | 'parts' | 'labor'>('details');
+  const [tab, setTab] = useState<'details' | 'parts' | 'labor' | 'checklist'>('details');
   const update = (k: keyof WorkOrder, v: string | number) => setForm({ ...form, [k]: v });
   const field = (label: string, key: keyof WorkOrder, type = 'text') => (
     <div><label className="block text-xs text-slate-500 mb-1">{label}</label>
@@ -129,7 +129,7 @@ function WOForm({ form, setForm, onSave, saving, isEdit }: { form: WorkOrder; se
   return (
     <div>
       <div className="flex gap-1 mb-4 border-b border-slate-800">
-        {[{ id: 'details', label: 'Details' }, { id: 'parts', label: 'Parts', icon: <Package className="w-3.5 h-3.5" /> }, { id: 'labor', label: 'Labor', icon: <Clock className="w-3.5 h-3.5" /> }].map(t => (
+        {[{ id: 'details', label: 'Details' }, { id: 'checklist', label: 'Checklist', icon: <ListChecks className="w-3.5 h-3.5" /> }, { id: 'parts', label: 'Parts', icon: <Package className="w-3.5 h-3.5" /> }, { id: 'labor', label: 'Labor', icon: <Clock className="w-3.5 h-3.5" /> }].map(t => (
           <button key={t.id} onClick={() => setTab(t.id as typeof tab)}
             className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t.id ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>
             {'icon' in t && t.icon}{t.label}
@@ -151,6 +151,8 @@ function WOForm({ form, setForm, onSave, saving, isEdit }: { form: WorkOrder; se
             <textarea value={form.resolution} onChange={e => update('resolution', e.target.value)} rows={2} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /></div>
         </div>
       )}
+      {tab === 'checklist' && isEdit && <ChecklistPanel workOrderId={form.id} />}
+      {tab === 'checklist' && !isEdit && <p className="text-slate-500 text-sm py-4">Save the work order first to apply a procedure checklist.</p>}
       {tab === 'parts' && isEdit && <PartsPanel workOrderId={form.id} />}
       {tab === 'parts' && !isEdit && <p className="text-slate-500 text-sm py-4">Save the work order first to add parts.</p>}
       {tab === 'labor' && isEdit && <LaborPanel workOrderId={form.id} />}
@@ -160,6 +162,106 @@ function WOForm({ form, setForm, onSave, saving, isEdit }: { form: WorkOrder; se
           {saving ? 'Saving...' : 'Save'}</button>
       </div>
     </div>);
+interface ChecklistItem {
+  id: number; workOrderId: string; procedureId: string; stepOrder: number;
+  instruction: string; expectedResult: string; responseType: 'checkbox' | 'reading' | 'pass_fail' | 'text';
+  unit: string; safetyNote: string; completed: boolean; resultValue: string;
+  resultStatus: '' | 'pass' | 'fail' | 'na'; notes: string; completedBy: string; completedAt: string;
+}
+interface ProcedureOption { id: string; title: string; version: string; stepCount?: number; active: boolean; }
+
+function ChecklistPanel({ workOrderId }: { workOrderId: string }) {
+  const [items, setItems] = useState<ChecklistItem[]>([]);
+  const [procedures, setProcedures] = useState<ProcedureOption[]>([]);
+  const [procedureId, setProcedureId] = useState('');
+  const [applying, setApplying] = useState(false);
+
+  const fetchItems = useCallback(() => {
+    fetch(`/api/work-orders/checklist?woId=${workOrderId}`).then(r => r.json()).then(setItems).catch(() => {});
+  }, [workOrderId]);
+  useEffect(() => {
+    fetchItems();
+    fetch('/api/procedures').then(r => r.json()).then((rows: ProcedureOption[]) => setProcedures(rows.filter(p => p.active))).catch(() => {});
+  }, [fetchItems]);
+
+  const apply = async () => {
+    if (!procedureId) return;
+    setApplying(true);
+    try {
+      const r = await fetch('/api/work-orders/checklist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ workOrderId, procedureId }) });
+      if (!r.ok) { alert((await r.json()).error); return; }
+      setItems(await r.json());
+      setProcedureId('');
+    } finally { setApplying(false); }
+  };
+
+  const saveItem = async (item: ChecklistItem, patch: Partial<ChecklistItem>) => {
+    const next = { ...item, ...patch };
+    setItems(prev => prev.map(i => i.id === item.id ? next : i));
+    await fetch('/api/work-orders/checklist', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: item.id, completed: next.completed, resultValue: next.resultValue, resultStatus: next.resultStatus, notes: next.notes }),
+    });
+  };
+  const removeItem = async (id: number) => {
+    await fetch('/api/work-orders/checklist', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    fetchItems();
+  };
+  const done = items.filter(i => i.completed).length;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-white">Checklist ({done}/{items.length})</h4>
+        <span className="text-xs text-slate-500">Copied from the procedure. Later SOP edits do not change this work order.</span>
+      </div>
+      {items.length > 0 ? items.map(item => (
+        <div key={item.id} className={`border rounded-lg p-3 space-y-2 ${item.completed ? 'border-green-500/30 bg-green-500/5' : 'border-slate-800'}`}>
+          <div className="flex items-start gap-2">
+            <input type="checkbox" checked={item.completed} onChange={e => saveItem(item, { completed: e.target.checked })} className="mt-1" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-white">{item.stepOrder}. {item.instruction}</p>
+              {item.expectedResult && <p className="text-xs text-slate-500">Expected: {item.expectedResult}{item.unit ? ` ${item.unit}` : ''}</p>}
+              {item.safetyNote && <p className="text-xs text-amber-400">Safety: {item.safetyNote}</p>}
+            </div>
+            <button onClick={() => removeItem(item.id)} className="text-slate-500 hover:text-red-400" aria-label="Remove step"><Trash2 className="w-3.5 h-3.5" /></button>
+          </div>
+          <div className="grid grid-cols-3 gap-2 pl-6">
+            {(item.responseType === 'reading' || item.responseType === 'text') && (
+              <input value={item.resultValue} onChange={e => saveItem(item, { resultValue: e.target.value, completed: true })} placeholder={item.responseType === 'reading' ? `Reading${item.unit ? ` (${item.unit})` : ''}` : 'Result'}
+                className="col-span-2 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            )}
+            {(item.responseType === 'pass_fail' || item.responseType === 'reading') && (
+              <select value={item.resultStatus} onChange={e => saveItem(item, { resultStatus: e.target.value as ChecklistItem['resultStatus'], completed: e.target.value !== '' })}
+                className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">Result</option>
+                <option value="pass">Pass</option>
+                <option value="fail">Fail</option>
+                <option value="na">N/A</option>
+              </select>
+            )}
+            <input value={item.notes} onChange={e => saveItem(item, { notes: e.target.value })} placeholder="Notes"
+              className="col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          {item.completedBy && <p className="text-[10px] text-slate-500 pl-6">{item.completedBy} · {item.completedAt}</p>}
+        </div>
+      )) : <p className="text-slate-500 text-sm">No checklist yet. Apply a procedure below.</p>}
+      <div className="flex items-end gap-2 pt-2">
+        <div className="flex-1">
+          <label className="block text-xs text-slate-500 mb-1">Apply procedure</label>
+          <select value={procedureId} onChange={e => setProcedureId(e.target.value)} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">Select procedure...</option>
+            {procedures.map(p => <option key={p.id} value={p.id}>{p.title} v{p.version} ({p.stepCount ?? 0} steps)</option>)}
+          </select>
+        </div>
+        <button onClick={apply} disabled={applying || !procedureId} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-3 py-2 rounded-lg text-sm transition-colors">
+          {applying ? 'Applying...' : 'Apply'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 }
 
 function PartsPanel({ workOrderId }: { workOrderId: string }) {

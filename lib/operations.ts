@@ -3,7 +3,7 @@ import { type InStatement } from '@libsql/client';
 import bcryptjs from 'bcryptjs';
 import { generateHydroAssets, generateHydroInventory } from './hydro-seed';
 import { EXCEL_VENDORS } from './excel-vendors';
-import type { Asset, WorkOrder, PmSchedule, InventoryItem, SiteConfig, DbUser, WoPart, WoLabor, Vendor, PurchaseOrder, PoItem, MeterReading, Site, ComplianceObligation, Inspection, Document, SafetyPermit, ElectricalTest } from './types';
+import type { Asset, WorkOrder, PmSchedule, InventoryItem, SiteConfig, DbUser, WoPart, WoLabor, Vendor, PurchaseOrder, PoItem, MeterReading, Site, ComplianceObligation, Inspection, Document, SafetyPermit, ElectricalTest, Procedure, ProcedureStep, WoChecklistItem, ProcedureResponseType } from './types';
 
 // ─── Helpers ───────────────────────────────────────────────────
 function nowIso(): string { return new Date().toISOString(); }
@@ -288,6 +288,9 @@ function rowToPmSchedule(r: Record<string, unknown>): PmSchedule {
     frequencyValue: r.frequency_value as number, lastCompleted: r.last_completed as string,
     nextDue: r.next_due as string, assignedTo: r.assigned_to as string,
     estimatedHours: r.estimated_hours as number, active: !!(r.active as number),
+    deferralReason: (r.deferral_reason as string) || '',
+    deferralApprovedBy: (r.deferral_approved_by as string) || '',
+    procedureId: (r.procedure_id as string) || '',
     createdAt: r.created_at as string, updatedAt: r.updated_at as string,
   };
 }
@@ -311,10 +314,10 @@ export async function getPmSchedules(): Promise<PmSchedule[]> {
 
 export async function upsertPmSchedule(pm: PmSchedule): Promise<void> {
   const db = await getDb();
-  await db.execute({ sql: `INSERT INTO pm_schedules (id,asset_id,title,description,frequency_type,frequency_value,last_completed,next_due,assigned_to,estimated_hours,active,deferral_reason,deferral_approved_by,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,frequency_type=excluded.frequency_type,frequency_value=excluded.frequency_value,last_completed=excluded.last_completed,next_due=excluded.next_due,assigned_to=excluded.assigned_to,estimated_hours=excluded.estimated_hours,active=excluded.active,deferral_reason=excluded.deferral_reason,deferral_approved_by=excluded.deferral_approved_by,updated_at=excluded.updated_at`,
-    args: [pm.id, pm.assetId || null, pm.title, pm.description, pm.frequencyType, pm.frequencyValue, pm.lastCompleted, pm.nextDue, pm.assignedTo, pm.estimatedHours, pm.active ? 1 : 0, pm.deferralReason || '', pm.deferralApprovedBy || ''] });
+  await db.execute({ sql: `INSERT INTO pm_schedules (id,asset_id,title,description,frequency_type,frequency_value,last_completed,next_due,assigned_to,estimated_hours,active,deferral_reason,deferral_approved_by,procedure_id,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,frequency_type=excluded.frequency_type,frequency_value=excluded.frequency_value,last_completed=excluded.last_completed,next_due=excluded.next_due,assigned_to=excluded.assigned_to,estimated_hours=excluded.estimated_hours,active=excluded.active,deferral_reason=excluded.deferral_reason,deferral_approved_by=excluded.deferral_approved_by,procedure_id=excluded.procedure_id,updated_at=excluded.updated_at`,
+    args: [pm.id, pm.assetId || null, pm.title, pm.description, pm.frequencyType, pm.frequencyValue, pm.lastCompleted, pm.nextDue, pm.assignedTo, pm.estimatedHours, pm.active ? 1 : 0, pm.deferralReason || '', pm.deferralApprovedBy || '', pm.procedureId || ''] });
 }
 
 export async function deletePmSchedule(id: string): Promise<void> {
@@ -496,6 +499,9 @@ export async function generateWorkOrderFromPm(pmId: string, userId: number, user
   await db.execute({ sql: `INSERT INTO work_orders (id, asset_id, title, description, type, priority, status, assigned_to, requested_by, due_date, created_at, updated_at)
     VALUES (?,?,?,?,'preventive','medium','open',?,?,?,?,?)`,
     args: [woId, pm.asset_id as string | null, pm.title as string, (pm.description as string) || 'Generated from PM schedule', pm.assigned_to as string, username, pm.next_due as string, now, now] });
+
+  const procedureId = (pm.procedure_id as string) || '';
+  if (procedureId) await applyProcedureToWorkOrder(woId, procedureId, username);
 
   // Update PM: set last_completed = today, recalculate next_due
   const nextDue = await calcNextDue(pm.frequency_type as string, pm.frequency_value as number);
@@ -888,6 +894,140 @@ export async function getBacklogAging(): Promise<{ aging: string; count: number;
       END
   `);
   return rs.rows as unknown as { aging: string; count: number; totalCost: number }[];
+}
+
+function rowToProcedureStep(r: Record<string, unknown>): ProcedureStep {
+  return {
+    id: r.id as number,
+    procedureId: r.procedure_id as string,
+    stepOrder: r.step_order as number,
+    instruction: r.instruction as string,
+    expectedResult: (r.expected_result as string) || '',
+    responseType: r.response_type as ProcedureResponseType,
+    unit: (r.unit as string) || '',
+    safetyNote: (r.safety_note as string) || '',
+  };
+}
+
+function rowToProcedure(r: Record<string, unknown>): Procedure {
+  return {
+    id: r.id as string,
+    title: r.title as string,
+    description: (r.description as string) || '',
+    category: r.category as Procedure['category'],
+    assetId: (r.asset_id as string) || '',
+    version: (r.version as string) || '1.0',
+    active: !!(r.active as number),
+    stepCount: Number(r.step_count ?? 0),
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  };
+}
+
+export async function getProcedures(): Promise<Procedure[]> {
+  const rs = await (await getDb()).execute(`
+    SELECT p.*, (SELECT COUNT(*) FROM procedure_steps s WHERE s.procedure_id = p.id) AS step_count
+    FROM procedures p ORDER BY p.title
+  `);
+  return (rs.rows as unknown as Record<string, unknown>[]).map(rowToProcedure);
+}
+
+export async function getProcedure(id: string): Promise<Procedure | null> {
+  const db = await getDb();
+  const rs = await db.execute({ sql: 'SELECT * FROM procedures WHERE id = ?', args: [id] });
+  const row = rs.rows[0] as unknown as Record<string, unknown> | undefined;
+  if (!row) return null;
+  const steps = await db.execute({ sql: 'SELECT * FROM procedure_steps WHERE procedure_id = ? ORDER BY step_order, id', args: [id] });
+  return {
+    ...rowToProcedure(row),
+    steps: (steps.rows as unknown as Record<string, unknown>[]).map(rowToProcedureStep),
+  };
+}
+
+export async function upsertProcedure(p: Procedure): Promise<void> {
+  const db = await getDb();
+  await db.execute({
+    sql: `INSERT INTO procedures (id,title,description,category,asset_id,version,active,updated_at)
+      VALUES (?,?,?,?,?,?,?,datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,category=excluded.category,asset_id=excluded.asset_id,version=excluded.version,active=excluded.active,updated_at=excluded.updated_at`,
+    args: [p.id, p.title, p.description, p.category, p.assetId || '', p.version || '1.0', p.active ? 1 : 0],
+  });
+  await db.execute({ sql: 'DELETE FROM procedure_steps WHERE procedure_id = ?', args: [p.id] });
+  const steps = p.steps || [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (!s.instruction.trim()) continue;
+    await db.execute({
+      sql: `INSERT INTO procedure_steps (procedure_id,step_order,instruction,expected_result,response_type,unit,safety_note)
+        VALUES (?,?,?,?,?,?,?)`,
+      args: [p.id, s.stepOrder || i + 1, s.instruction.trim(), s.expectedResult || '', s.responseType || 'checkbox', s.unit || '', s.safetyNote || ''],
+    });
+  }
+}
+
+export async function deleteProcedure(id: string): Promise<void> {
+  const db = await getDb();
+  await db.execute({ sql: 'DELETE FROM procedure_steps WHERE procedure_id = ?', args: [id] });
+  await db.execute({ sql: 'DELETE FROM procedures WHERE id = ?', args: [id] });
+}
+
+function rowToChecklistItem(r: Record<string, unknown>): WoChecklistItem {
+  return {
+    id: r.id as number,
+    workOrderId: r.work_order_id as string,
+    procedureId: (r.procedure_id as string) || '',
+    stepOrder: r.step_order as number,
+    instruction: r.instruction as string,
+    expectedResult: (r.expected_result as string) || '',
+    responseType: (r.response_type as ProcedureResponseType) || 'checkbox',
+    unit: (r.unit as string) || '',
+    safetyNote: (r.safety_note as string) || '',
+    completed: !!(r.completed as number),
+    resultValue: (r.result_value as string) || '',
+    resultStatus: ((r.result_status as string) || '') as WoChecklistItem['resultStatus'],
+    notes: (r.notes as string) || '',
+    completedBy: (r.completed_by as string) || '',
+    completedAt: (r.completed_at as string) || '',
+  };
+}
+
+export async function getWoChecklist(workOrderId: string): Promise<WoChecklistItem[]> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM wo_checklist_items WHERE work_order_id = ? ORDER BY step_order, id', args: [workOrderId] });
+  return (rs.rows as unknown as Record<string, unknown>[]).map(rowToChecklistItem);
+}
+
+export async function applyProcedureToWorkOrder(workOrderId: string, procedureId: string, username: string): Promise<WoChecklistItem[]> {
+  const db = await getDb();
+  const steps = await db.execute({ sql: 'SELECT * FROM procedure_steps WHERE procedure_id = ? ORDER BY step_order, id', args: [procedureId] });
+  const maxRs = await db.execute({ sql: 'SELECT COALESCE(MAX(step_order),0) as m FROM wo_checklist_items WHERE work_order_id = ?', args: [workOrderId] });
+  let order = Number((maxRs.rows[0] as unknown as { m: number }).m);
+  for (const raw of steps.rows) {
+    const s = raw as unknown as { instruction: string; expected_result: string; response_type: string; unit: string; safety_note: string };
+    order += 1;
+    await db.execute({
+      sql: `INSERT INTO wo_checklist_items (work_order_id,procedure_id,step_order,instruction,expected_result,response_type,unit,safety_note)
+        VALUES (?,?,?,?,?,?,?,?)`,
+      args: [workOrderId, procedureId, order, s.instruction, s.expected_result || '', s.response_type || 'checkbox', s.unit || '', s.safety_note || ''],
+    });
+  }
+  void username;
+  return getWoChecklist(workOrderId);
+}
+
+export async function updateWoChecklistItem(item: { id: number; completed: boolean; resultValue: string; resultStatus: string; notes: string; completedBy: string }): Promise<void> {
+  const status = ['pass', 'fail', 'na'].includes(item.resultStatus) ? item.resultStatus : '';
+  await (await getDb()).execute({
+    sql: `UPDATE wo_checklist_items
+      SET completed = ?, result_value = ?, result_status = ?, notes = ?,
+          completed_by = CASE WHEN ? = 1 THEN ? ELSE '' END,
+          completed_at = CASE WHEN ? = 1 THEN datetime('now') ELSE '' END
+      WHERE id = ?`,
+    args: [item.completed ? 1 : 0, item.resultValue || '', status, item.notes || '', item.completed ? 1 : 0, item.completedBy || '', item.completed ? 1 : 0, item.id],
+  });
+}
+
+export async function deleteWoChecklistItem(id: number): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM wo_checklist_items WHERE id = ?', args: [id] });
 }
 
 export async function deleteComplianceObligation(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM compliance_obligations WHERE id = ?', args: [id] }); }

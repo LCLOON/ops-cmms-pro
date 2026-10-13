@@ -5,6 +5,7 @@ import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
 import AssetTreeView from './AssetTreeView';
+import ImportTools from './ImportTools';
 import { List, GitBranch } from 'lucide-react';
 
 interface Asset {
@@ -93,9 +94,12 @@ export default function AssetPage() {
           <h2 className="text-xl font-bold text-white">Asset Management</h2>
           <p className="text-slate-400 text-sm mt-1">Track and manage all equipment and assets</p>
         </div>
-        <div className="flex items-center gap-2 bg-slate-800/50 rounded-lg p-1">
-          <button onClick={() => setViewMode('table')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${viewMode === 'table' ? 'bg-blue-600/30 text-blue-400' : 'text-slate-400 hover:text-slate-200'}`}><List className="w-3.5 h-3.5" />Table</button>
-          <button onClick={() => setViewMode('tree')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${viewMode === 'tree' ? 'bg-blue-600/30 text-blue-400' : 'text-slate-400 hover:text-slate-200'}`}><GitBranch className="w-3.5 h-3.5" />Tree</button>
+        <div className="flex items-center gap-3">
+          <ImportTools canEdit={canEdit} onImported={fetchAssets} />
+          <div className="flex items-center gap-2 bg-slate-800/50 rounded-lg p-1">
+            <button onClick={() => setViewMode('table')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${viewMode === 'table' ? 'bg-blue-600/30 text-blue-400' : 'text-slate-400 hover:text-slate-200'}`}><List className="w-3.5 h-3.5" />Table</button>
+            <button onClick={() => setViewMode('tree')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${viewMode === 'tree' ? 'bg-blue-600/30 text-blue-400' : 'text-slate-400 hover:text-slate-200'}`}><GitBranch className="w-3.5 h-3.5" />Tree</button>
+          </div>
         </div>
       </div>
       {viewMode === 'tree' ? (

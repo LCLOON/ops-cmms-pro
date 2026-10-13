@@ -9,6 +9,7 @@ import Dashboard from '@/components/Dashboard';
 import AssetPage from '@/components/AssetPage';
 import WorkOrderPage from '@/components/WorkOrderPage';
 import PmSchedulePage from '@/components/PmSchedulePage';
+import ProceduresPage from '@/components/ProceduresPage';
 import InventoryPage from '@/components/InventoryPage';
 import VendorPage from '@/components/VendorPage';
 import PurchaseOrderPage from '@/components/PurchaseOrderPage';
@@ -19,10 +20,12 @@ import InspectionsPage from '@/components/InspectionsPage';
 import ReportsPage from '@/components/ReportsPage';
 import AdminPage from '@/components/AdminPage';
 import ElectricalTestsPage from '@/components/ElectricalTestsPage';
+import AdvisorPage from '@/components/AdvisorPage';
+import HelpPage from '@/components/HelpPage';
 import GlobalSearch from '@/components/GlobalSearch';
 import { PageSkeleton } from '@/components/Skeletons';
 
-type Page = 'dashboard' | 'assets' | 'work-orders' | 'pm-schedule' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'electrical';
+type Page = 'dashboard' | 'assets' | 'work-orders' | 'pm-schedule' | 'procedures' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'electrical' | 'advisor' | 'help';
 
 export default function AppShell() {
   const { user, loading } = useAuth();
@@ -59,6 +62,7 @@ export default function AppShell() {
           {page === 'assets' && <AssetPage />}
           {page === 'work-orders' && <WorkOrderPage />}
           {page === 'pm-schedule' && <PmSchedulePage />}
+          {page === 'procedures' && <ProceduresPage />}
           {page === 'inventory' && <InventoryPage />}
           {page === 'vendors' && <VendorPage />}
           {page === 'purchase-orders' && <PurchaseOrderPage />}
@@ -69,6 +73,8 @@ export default function AppShell() {
           {page === 'reports' && <ReportsPage />}
           {page === 'admin' && <AdminPage />}
           {page === 'electrical' && <ElectricalTestsPage />}
+          {page === 'advisor' && <AdvisorPage onNavigate={p => setPage(p as Page)} />}
+          {page === 'help' && <HelpPage onNavigate={p => setPage(p as Page)} />}
         </div>
       </main>
     </div>

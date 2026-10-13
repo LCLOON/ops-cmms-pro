@@ -48,6 +48,26 @@ export const pmScheduleSchema = z.object({
   assignedTo: z.string().default(''),
   estimatedHours: z.number().min(0).default(1),
   active: z.boolean().default(true),
+  procedureId: z.string().default(''),
+});
+
+export const procedureStepSchema = z.object({
+  stepOrder: z.number().int().min(1).default(1),
+  instruction: z.string().min(1, 'Step instruction required'),
+  expectedResult: z.string().default(''),
+  responseType: z.enum(['checkbox', 'reading', 'pass_fail', 'text']).default('checkbox'),
+  unit: z.string().default(''),
+  safetyNote: z.string().default(''),
+});
+
+export const procedureSchema = z.object({
+  title: z.string().min(1, 'Title required'),
+  description: z.string().default(''),
+  category: z.enum(['mechanical', 'electrical', 'hvac', 'plumbing', 'structural', 'safety', 'inspection', 'other']).default('other'),
+  assetId: z.string().default(''),
+  version: z.string().default('1.0'),
+  active: z.boolean().default(true),
+  steps: z.array(procedureStepSchema).default([]),
 });
 
 export const inventoryItemSchema = z.object({

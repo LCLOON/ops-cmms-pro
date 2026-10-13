@@ -55,6 +55,7 @@ export interface PmSchedule {
   active: boolean;
   deferralReason?: string;
   deferralApprovedBy?: string;
+  procedureId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -263,6 +264,52 @@ export interface SafetyPermit {
   attachments: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type ProcedureCategory = 'mechanical' | 'electrical' | 'hvac' | 'plumbing' | 'structural' | 'safety' | 'inspection' | 'other';
+export type ProcedureResponseType = 'checkbox' | 'reading' | 'pass_fail' | 'text';
+
+export interface ProcedureStep {
+  id: number;
+  procedureId: string;
+  stepOrder: number;
+  instruction: string;
+  expectedResult: string;
+  responseType: ProcedureResponseType;
+  unit: string;
+  safetyNote: string;
+}
+
+export interface Procedure {
+  id: string;
+  title: string;
+  description: string;
+  category: ProcedureCategory;
+  assetId: string;
+  version: string;
+  active: boolean;
+  stepCount?: number;
+  steps?: ProcedureStep[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WoChecklistItem {
+  id: number;
+  workOrderId: string;
+  procedureId: string;
+  stepOrder: number;
+  instruction: string;
+  expectedResult: string;
+  responseType: ProcedureResponseType;
+  unit: string;
+  safetyNote: string;
+  completed: boolean;
+  resultValue: string;
+  resultStatus: '' | 'pass' | 'fail' | 'na';
+  notes: string;
+  completedBy: string;
+  completedAt: string;
 }
 
 export interface ElectricalTest {

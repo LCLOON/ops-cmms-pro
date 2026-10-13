@@ -91,6 +91,7 @@ async function initSchema(db: Client): Promise<void> {
   const pmCols: Array<[string, string]> = [
     ['deferral_reason', "ALTER TABLE pm_schedules ADD COLUMN deferral_reason TEXT NOT NULL DEFAULT ''"],
     ['deferral_approved_by', "ALTER TABLE pm_schedules ADD COLUMN deferral_approved_by TEXT NOT NULL DEFAULT ''"],
+    ['procedure_id', "ALTER TABLE pm_schedules ADD COLUMN procedure_id TEXT NOT NULL DEFAULT ''"],
   ];
   let alters = '';
   for (const [col, ddl] of assetCols) {
@@ -387,6 +388,49 @@ async function initSchema(db: Client): Promise<void> {
       notes TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Reusable procedure library (the SOP), separate from one-off work order notes.
+    CREATE TABLE IF NOT EXISTS procedures (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'other' CHECK(category IN ('mechanical','electrical','hvac','plumbing','structural','safety','inspection','other')),
+      asset_id TEXT NOT NULL DEFAULT '',
+      version TEXT NOT NULL DEFAULT '1.0',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS procedure_steps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      procedure_id TEXT NOT NULL REFERENCES procedures(id) ON DELETE CASCADE,
+      step_order INTEGER NOT NULL DEFAULT 1,
+      instruction TEXT NOT NULL,
+      expected_result TEXT NOT NULL DEFAULT '',
+      response_type TEXT NOT NULL DEFAULT 'checkbox' CHECK(response_type IN ('checkbox','reading','pass_fail','text')),
+      unit TEXT NOT NULL DEFAULT '',
+      safety_note TEXT NOT NULL DEFAULT ''
+    );
+
+    -- Snapshot copied onto a work order when a procedure is applied.
+    CREATE TABLE IF NOT EXISTS wo_checklist_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_order_id TEXT NOT NULL REFERENCES work_orders(id) ON DELETE CASCADE,
+      procedure_id TEXT NOT NULL DEFAULT '',
+      step_order INTEGER NOT NULL DEFAULT 1,
+      instruction TEXT NOT NULL,
+      expected_result TEXT NOT NULL DEFAULT '',
+      response_type TEXT NOT NULL DEFAULT 'checkbox',
+      unit TEXT NOT NULL DEFAULT '',
+      safety_note TEXT NOT NULL DEFAULT '',
+      completed INTEGER NOT NULL DEFAULT 0,
+      result_value TEXT NOT NULL DEFAULT '',
+      result_status TEXT NOT NULL DEFAULT '' CHECK(result_status IN ('','pass','fail','na')),
+      notes TEXT NOT NULL DEFAULT '',
+      completed_by TEXT NOT NULL DEFAULT '',
+      completed_at TEXT NOT NULL DEFAULT ''
     );
   `);
 }

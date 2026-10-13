@@ -1,7 +1,15 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { upsertAsset, upsertInventoryItem } from '@/lib/operations';
+import { upsertAsset, upsertInventoryItem, logAudit } from '@/lib/operations';
 import type { Asset, InventoryItem } from '@/lib/types';
+import { convertCmmsRow, parseDelimited, type CmmsSource, type RawRow } from '@/lib/cmms-import';
+
+const CMMS_SOURCES: CmmsSource[] = ['generic', 'sap', 'maximo', 'fiix', 'maintainx', 'emaint', 'limble', 'upkeep'];
+const MAX_ROWS = 2000;
+
+function isSource(value: unknown): value is CmmsSource {
+  return typeof value === 'string' && (CMMS_SOURCES as string[]).includes(value);
+}
 
 export async function POST(request: Request) {
   try {
@@ -9,13 +17,64 @@ export async function POST(request: Request) {
     if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     if (session.role === 'viewer') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-    const { type, data } = await request.json();
-    if (!type || !data || !Array.isArray(data)) {
-      return NextResponse.json({ error: 'type and data array required' }, { status: 400 });
+    const body = await request.json().catch(() => null) as {
+      type?: unknown;
+      data?: unknown;
+      source?: unknown;
+      csv?: unknown;
+      preview?: unknown;
+    } | null;
+
+    if (!body || typeof body.type !== 'string') {
+      return NextResponse.json({ error: 'type required' }, { status: 400 });
     }
 
-    let imported = 0;
     const now = new Date().toISOString();
+
+    // CMMS conversion: preview maps a foreign export; commit persists it.
+    if (body.type === 'cmms') {
+      if (!isSource(body.source)) {
+        return NextResponse.json({ error: `source must be one of: ${CMMS_SOURCES.join(', ')}` }, { status: 400 });
+      }
+
+      let rows: RawRow[] = [];
+      if (typeof body.csv === 'string' && body.csv.trim()) rows = parseDelimited(body.csv);
+      else if (Array.isArray(body.data)) rows = body.data as RawRow[];
+      if (rows.length === 0) return NextResponse.json({ error: 'csv text or data array required' }, { status: 400 });
+      if (rows.length > MAX_ROWS) return NextResponse.json({ error: `too many rows (max ${MAX_ROWS})` }, { status: 400 });
+
+      const converted = rows.map((row, i) => convertCmmsRow(body.source as CmmsSource, row, i, now));
+      const warnings = converted.flatMap(c => c.warnings);
+
+      if (body.preview === true) {
+        return NextResponse.json({
+          preview: true,
+          source: body.source,
+          count: converted.length,
+          warnings,
+          assets: converted.map(c => c.asset),
+        });
+      }
+
+      for (const { asset } of converted) await upsertAsset(asset);
+      await logAudit({
+        userId: session.userId,
+        username: session.username,
+        action: 'import',
+        entityType: 'asset',
+        entityId: `cmms:${body.source}`,
+        details: `Converted ${converted.length} ${body.source} rows into assets (${warnings.length} warnings)`,
+      });
+      return NextResponse.json({ success: true, imported: converted.length, warnings });
+    }
+
+    if (!Array.isArray(body.data)) {
+      return NextResponse.json({ error: 'type and data array required' }, { status: 400 });
+    }
+    if (body.data.length > MAX_ROWS) return NextResponse.json({ error: `too many rows (max ${MAX_ROWS})` }, { status: 400 });
+
+    const { type, data } = body;
+    let imported = 0;
 
     if (type === 'assets') {
       for (const row of data) {

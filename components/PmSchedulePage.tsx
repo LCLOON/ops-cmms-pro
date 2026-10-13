@@ -12,13 +12,13 @@ interface PmSchedule {
   nextDue: string; assignedTo: string; estimatedHours: number;
   active: boolean; createdAt: string; updatedAt: string;
   assetName?: string; siteName?: string;
-  deferralReason?: string; deferralApprovedBy?: string;
+  deferralReason?: string; deferralApprovedBy?: string; procedureId?: string;
 }
 
 const defaultPM: PmSchedule = {
   id: '', assetId: '', title: '', description: '', frequencyType: 'weekly',
   frequencyValue: 1, lastCompleted: '', nextDue: '', assignedTo: '',
-  estimatedHours: 1, active: true, createdAt: '', updatedAt: '',
+  estimatedHours: 1, active: true, procedureId: '', createdAt: '', updatedAt: '',
 };
 
 const freqLabels: Record<string, string> = {
@@ -115,6 +115,10 @@ export default function PmSchedulePage() {
 function PMForm({ form, setForm, onSave, saving, onClose }: {
   form: PmSchedule; setForm: (f: PmSchedule) => void; onSave: () => void; saving: boolean; onClose: () => void;
 }) {
+  const [procedures, setProcedures] = useState<{ id: string; title: string; version: string; active: boolean }[]>([]);
+  useEffect(() => {
+    fetch('/api/procedures').then(r => r.json()).then((rows: { id: string; title: string; version: string; active: boolean }[]) => setProcedures(rows.filter(p => p.active))).catch(() => {});
+  }, []);
   const update = (k: keyof PmSchedule, v: string | number | boolean) => setForm({ ...form, [k]: v });
   const field = (label: string, key: keyof PmSchedule, type = 'text') => (
     <div>
@@ -140,6 +144,14 @@ function PMForm({ form, setForm, onSave, saving, onClose }: {
         {field('Every (value)', 'frequencyValue', 'number')}
         {field('Next Due', 'nextDue', 'date')}
         {field('Last Completed', 'lastCompleted', 'date')}
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">Procedure</label>
+          <select value={form.procedureId || ''} onChange={e => update('procedureId', e.target.value)}
+            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">None — generated work orders have no checklist</option>
+            {procedures.map(p => <option key={p.id} value={p.id}>{p.title} v{p.version}</option>)}
+          </select>
+        </div>
         {field('Assigned To', 'assignedTo')}
         {field('Est. Hours', 'estimatedHours', 'number')}
         {field('Deferral Reason', 'deferralReason')}
