@@ -12,26 +12,25 @@ interface AuthContextType {
   user: User | null; loading: boolean;
   login: (username: string, password: string) => Promise<string | null>;
   logout: () => Promise<void>;
+  refreshSession: () => Promise<void>;
   canEdit: boolean; isAdmin: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null, loading: true, login: async () => 'Not initialized',
-  logout: async () => {}, canEdit: false, isAdmin: false,
+  logout: async () => {}, refreshSession: async () => {}, canEdit: false, isAdmin: false,
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const checkSession = useCallback(async () => {
-    try {
-      const res = await fetch('/api/auth/session');
-      const data = await res.json();
-      setUser(data.user ?? null);
-    } catch { setUser(null); }
-    finally { setLoading(false); }
-  }, []);
+  const checkSession = useCallback(() =>
+    fetch('/api/auth/session')
+      .then(res => res.json())
+      .then(data => setUser(data.user ?? null))
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false)), []);
 
   useEffect(() => { checkSession(); }, [checkSession]);
 

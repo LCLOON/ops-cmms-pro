@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getSession, SESSION_COOKIE_NAME } from '@/lib/auth';
+import { getSession, SESSION_COOKIE } from '@/lib/auth';
 import { cookies } from 'next/headers';
 
 export async function POST() {
   const cookieStore = await cookies();
-  cookieStore.delete(SESSION_COOKIE_NAME);
+  cookieStore.delete(SESSION_COOKIE);
   return NextResponse.json({ success: true });
 }
 

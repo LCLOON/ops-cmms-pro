@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import bcryptjs from 'bcryptjs';
-import crypto from 'crypto';
 import { createSession, sessionCookieOptions } from '@/lib/auth';
 import { seedDatabase, getUserByUsername, updateLastLogin } from '@/lib/operations';
 import { loginSchema } from '@/lib/validations';

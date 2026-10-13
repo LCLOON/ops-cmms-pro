@@ -8,7 +8,7 @@ const JWT_SECRET = new TextEncoder().encode(
     : 'ops-cmms-dev-secret-do-not-use-in-production')
 );
 
-const SESSION_COOKIE = 'oc_session';
+export const SESSION_COOKIE = 'oc_session';
 const SESSION_TTL = 8 * 60 * 60;
 
 export interface SessionPayload {

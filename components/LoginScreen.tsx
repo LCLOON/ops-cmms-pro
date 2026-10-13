@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Lock, AlertCircle, Eye, EyeOff, Wrench } from 'lucide-react';
+import { AlertCircle, Eye, EyeOff, Wrench } from 'lucide-react';
 import { useAuth } from './AuthContext';
 
 export default function LoginScreen() {
