@@ -1,36 +1,59 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OpsCMMSPro
+
+Computerized Maintenance Management System for hydroelectric operations — asset registry, work orders, preventive maintenance, inventory, purchasing, compliance, and reporting.
+
+Built with Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, and SQLite (better-sqlite3).
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) and sign in at `/app`. The database is created and seeded automatically on first run.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Seeded accounts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Username | Password | Role |
+| --- | --- | --- |
+| `admin` | `Admin2025!CMMS` | Administrator |
+| `manager` | `Manager2025!CMMS` | Maintenance Manager |
+| `technician` | `Tech2025!CMMS` | Lead Technician |
+| `viewer` | `Viewer2025!CMMS` | Read-only |
 
-## Learn More
+Change these before any real deployment. Sessions are JWT-based (8h) and require `JWT_SECRET` in `.env.local`.
 
-To learn more about Next.js, take a look at the following resources:
+## Database
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+The SQLite database lives in a persistent per-user directory, deliberately outside the project tree so the dev server's file watcher never fights with SQLite WAL/SHM files:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Windows: `%LOCALAPPDATA%\ops-cmms-pro\ops-cmms-pro.db`
+- macOS/Linux: `${XDG_DATA_HOME:-~/.local/share}/ops-cmms-pro/ops-cmms-pro.db`
+- Override with the `OPS_CMMS_DB_PATH` environment variable
+- On Vercel (serverless) it falls back to `/tmp` (ephemeral)
 
-## Deploy on Vercel
+To reset the demo data: stop the server, delete the `.db`, `-wal`, and `-shm` files, and restart — schema and seed data regenerate on the next request.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Scripts
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Development server (Turbopack) |
+| `npm run build` | Production build |
+| `npm start` | Production server |
+| `npm run lint` | ESLint |
+| `npx tsc --noEmit` | Typecheck (no test runner is configured) |
+
+## Modules
+
+Dashboard & analytics (KPIs, MTTR/MTBF, cost trends) · Assets (table + hierarchy) · Work Orders (labor, parts, status workflow) · PM Schedules (auto work-order generation, deferrals) · Inventory · Vendors · Purchase Orders · Compliance · Inspections · Electrical tests · Safety · Documents · Meter readings · Admin (sites, users, roles)
+
+## Roles
+
+| Role | Capabilities |
+| --- | --- |
+| Admin | Full access, user management, deletions |
+| Manager | CRUD on all entities, analytics |
+| Technician | Edit work orders, record labor, update PMs |
+| Viewer | Read-only |
