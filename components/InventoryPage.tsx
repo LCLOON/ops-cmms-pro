@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
+import { navigate } from '@/lib/nav';
 
 interface InventoryItem {
   id: string; name: string; partNumber: string; category: string;
@@ -66,7 +67,9 @@ export default function InventoryPage() {
     },
     { key: 'minQuantity', header: 'Min' },
     { key: 'unitCost', header: 'Cost', render: i => <span className="font-mono">${i.unitCost.toFixed(2)}</span> },
-    { key: 'supplier', header: 'Supplier' },
+    { key: 'supplier', header: 'Supplier', render: i => i.supplier ? (
+      <button onClick={() => navigate('vendors', { search: i.supplier })} className="text-blue-400 hover:text-blue-300 hover:underline text-xs" title="Find this supplier in Vendors">{i.supplier}</button>
+    ) : <span className="text-slate-600">-</span> },
     { key: 'location', header: 'Location' },
   ];
 

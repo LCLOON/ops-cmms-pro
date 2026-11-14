@@ -4,7 +4,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
-import { Trash2, Plus, Package, Clock, ListChecks } from 'lucide-react';
+import { Trash2, Plus, Package, Clock, ListChecks, ExternalLink } from 'lucide-react';
+import { navigate, type NavParams } from '@/lib/nav';
 
 interface WorkOrder {
   id: string; assetId: string; title: string; description: string;
@@ -38,9 +39,10 @@ const priorityColors: Record<string, string> = {
   medium: 'bg-blue-500/20 text-blue-400 border-blue-500/30', low: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
 };
 
-export default function WorkOrderPage() {
+export default function WorkOrderPage({ params }: { params?: NavParams }) {
   const { canEdit, loading: authLoading } = useAuth();
   const [items, setItems] = useState<WorkOrder[]>([]);
+  const [assets, setAssets] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [editItem, setEditItem] = useState<WorkOrder | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -51,6 +53,17 @@ export default function WorkOrderPage() {
     fetch('/api/work-orders').then(r => r.json()).then(setItems).catch(() => {}).finally(() => setLoading(false));
   }, []);
   useEffect(() => { if (!authLoading) fetchItems(); }, [authLoading, fetchItems]);
+
+  // Asset names are needed for the link column and the form picker.
+  useEffect(() => {
+    fetch('/api/assets').then(r => r.json())
+      .then((rows: { id: string; name: string }[]) => { if (Array.isArray(rows)) setAssets(rows.map(a => ({ id: a.id, name: a.name }))); })
+      .catch(() => {});
+  }, []);
+  const assetName = (id: string) => assets.find(a => a.id === id)?.name ?? id;
+
+  // A link from Assets arrives with assetId, so the list opens already scoped.
+  const visible = params?.assetId ? items.filter(w => w.assetId === params.assetId) : items;
 
   const openNew = () => { setForm(defaultWO); setEditItem(null); setShowForm(true); };
   const openEdit = (item: WorkOrder) => { setForm({ ...item }); setEditItem(item); setShowForm(true); };
@@ -78,6 +91,13 @@ export default function WorkOrderPage() {
   const columns: Column<WorkOrder>[] = [
     { key: 'id', header: 'WO #' },
     { key: 'title', header: 'Title' },
+    { key: 'assetId', header: 'Asset', render: w => w.assetId ? (
+      <button onClick={() => navigate('assets', { focusId: w.assetId })}
+        className="text-blue-400 hover:text-blue-300 hover:underline text-xs text-left max-w-[170px] truncate inline-flex items-center gap-1"
+        title={`Open ${assetName(w.assetId)} in Assets`}>
+        {assetName(w.assetId)}<ExternalLink className="w-3 h-3 flex-shrink-0" />
+      </button>
+    ) : <span className="text-slate-600">-</span> },
     { key: 'status', header: 'Status', render: w => (
       <div className="flex items-center gap-1">
         <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium border ${statusColors[w.status] || ''}`}>{w.status.replace('_', ' ')}</span>
@@ -101,18 +121,25 @@ export default function WorkOrderPage() {
   return (
     <div className="space-y-6">
       <div><h2 className="text-xl font-bold text-white">Work Orders</h2><p className="text-slate-400 text-sm mt-1">Create, assign, and track maintenance work orders</p></div>
-      <DataTable data={items} columns={columns} onEdit={openEdit} onDelete={canEdit ? remove : undefined} onAdd={canEdit ? openNew : undefined}
-        searchPlaceholder="Search work orders..." canEdit={canEdit} canDelete={canEdit} emptyMessage="No work orders found." />
+      {params?.assetId && (
+        <div className="flex items-center justify-between bg-blue-500/10 border border-blue-500/30 rounded-lg px-3 py-2 text-xs">
+          <span className="text-blue-300">Showing work orders for <span className="font-semibold">{assetName(params.assetId)}</span> ({visible.length})</span>
+          <button onClick={() => navigate('work-orders')} className="text-blue-400 hover:text-blue-300 underline">Show all</button>
+        </div>
+      )}
+      <DataTable key={`${params?.focusId ?? ''}|${params?.assetId ?? ''}`} data={visible} columns={columns} onEdit={openEdit} onDelete={canEdit ? remove : undefined} onAdd={canEdit ? openNew : undefined}
+        searchPlaceholder="Search work orders..." canEdit={canEdit} canDelete={canEdit} emptyMessage="No work orders found."
+        initialSearch={params?.focusId ?? ''} highlightId={params?.focusId} />
       {showForm && (
         <Modal open={showForm} onClose={() => setShowForm(false)} title={editItem ? `Edit WO: ${editItem.id}` : 'New Work Order'}>
-          <WOForm form={form} setForm={setForm} onSave={save} saving={saving} isEdit={!!editItem} />
+          <WOForm form={form} setForm={setForm} onSave={save} saving={saving} isEdit={!!editItem} assets={assets} />
         </Modal>
       )}
     </div>
   );
 }
 
-function WOForm({ form, setForm, onSave, saving, isEdit }: { form: WorkOrder; setForm: (f: WorkOrder) => void; onSave: () => void; saving: boolean; isEdit: boolean; }) {
+function WOForm({ form, setForm, onSave, saving, isEdit, assets }: { form: WorkOrder; setForm: (f: WorkOrder) => void; onSave: () => void; saving: boolean; isEdit: boolean; assets: { id: string; name: string }[]; }) {
   const [tab, setTab] = useState<'details' | 'parts' | 'labor' | 'checklist'>('details');
   const update = (k: keyof WorkOrder, v: string | number) => setForm({ ...form, [k]: v });
   const field = (label: string, key: keyof WorkOrder, type = 'text') => (
@@ -138,7 +165,15 @@ function WOForm({ form, setForm, onSave, saving, isEdit }: { form: WorkOrder; se
       {tab === 'details' && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            {field('Title', 'title')}{field('Asset ID', 'assetId')}
+            {field('Title', 'title')}
+            {/* A picker instead of a free-text id: typed asset ids were the
+                easiest way to create a work order attached to nothing. */}
+            <div><label className="block text-xs text-slate-500 mb-1">Asset</label>
+              <select value={form.assetId} onChange={e => setForm({ ...form, assetId: e.target.value })}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">No asset (site level)</option>
+                {assets.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select></div>
             {select('Type', 'type', ['corrective','preventive','predictive','emergency','inspection'])}
             {select('Priority', 'priority', ['critical','high','medium','low'])}
             {/* Completing a work order is gated on its checklist, so it is not

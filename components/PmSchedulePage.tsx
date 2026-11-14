@@ -5,6 +5,7 @@ import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
 import { Play } from 'lucide-react';
+import { navigate, type NavParams } from '@/lib/nav';
 
 interface PmSchedule {
   id: string; assetId: string; title: string; description: string;
@@ -27,7 +28,7 @@ const freqLabels: Record<string, string> = {
   semi_annual: 'Semi-Annual', annual: 'Annual', runtime_hours: 'Runtime Hours',
 };
 
-export default function PmSchedulePage() {
+export default function PmSchedulePage({ params }: { params?: NavParams }) {
   const { canEdit, loading: authLoading } = useAuth();
   const [items, setItems] = useState<PmSchedule[]>([]);
   const [loading, setLoading] = useState(true);
@@ -62,7 +63,17 @@ export default function PmSchedulePage() {
 
   const columns: Column<PmSchedule>[] = [
     { key: 'title', header: 'Title', render: p => <div className="flex items-center gap-1 min-w-0 max-w-[260px]" title={p.title}><span className="truncate text-sm">{p.title}</span>{p.deferralReason && <span className='shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400'>Deferred</span>}</div> },
-    { key: 'siteName', header: 'Site / Asset', render: p => <div className="min-w-[140px]"><span className="text-xs font-medium text-blue-400 block">{p.siteName || '—'}</span><span className="text-xs text-slate-500 truncate block">{p.assetName || p.assetId}</span></div> },
+    { key: 'siteName', header: 'Site / Asset', render: p => <div className="min-w-[140px]">
+      <span className="text-xs font-medium text-blue-400 block">{p.siteName || '-'}</span>
+      {p.assetId ? (
+        <button onClick={() => navigate('assets', { focusId: p.assetId })} title={`Open ${p.assetName || p.assetId} in Assets`}
+          className="text-xs text-slate-300 hover:text-blue-300 hover:underline truncate block max-w-[180px] text-left">{p.assetName || p.assetId}</button>
+      ) : <span className="text-xs text-slate-600">No asset</span>}
+    </div> },
+    { key: 'procedureId', header: 'SOP', render: p => p.procedureId ? (
+      <button onClick={() => navigate('procedures', { focusId: p.procedureId })}
+        className="text-xs text-blue-400 hover:text-blue-300 hover:underline">Open SOP</button>
+    ) : <span className="text-xs text-slate-600">-</span> },
     { key: 'frequencyType', header: 'Frequency', render: p => p.frequencyType === 'runtime_hours' ? (
       // Runtime PMs are meter-driven, so show progress through the interval
       // instead of a calendar date that cannot exist.
@@ -114,12 +125,15 @@ export default function PmSchedulePage() {
         )}
       </div>
       <DataTable
-        data={items} columns={columns}
+        key={`${params?.focusId ?? ''}|${params?.assetId ?? ''}`}
+        data={params?.assetId ? items.filter(p => p.assetId === params.assetId) : items}
+        columns={columns}
         onEdit={openEdit} onDelete={canEdit ? remove : undefined}
         onAdd={canEdit ? openNew : undefined}
         searchPlaceholder="Search PM schedules..."
         canEdit={canEdit} canDelete={canEdit}
         emptyMessage="No PM schedules found."
+        highlightId={params?.focusId}
       />
       {showForm && (
         <Modal open={showForm} onClose={() => setShowForm(false)} title={editItem ? 'Edit PM Schedule' : 'New PM Schedule'}>

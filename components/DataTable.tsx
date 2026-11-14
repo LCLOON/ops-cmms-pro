@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Search, ChevronUp, ChevronDown, Pencil, Trash2, Plus, Download } from 'lucide-react';
 
 export interface Column<T> {
@@ -21,16 +21,29 @@ interface Props<T> {
   canEdit?: boolean;
   canDelete?: boolean;
   emptyMessage?: string;
+  /** Seeds the search box, used when another tab deep-links to a record. */
+  initialSearch?: string;
+  /** Rows matching this id are visually highlighted. */
+  highlightId?: string;
 }
 
 export default function DataTable<T extends { id: string }>({
   data, columns, onEdit, onDelete, onAdd, addLabel = 'Add New',
   searchPlaceholder = 'Search...', canEdit = true, canDelete = true,
-  emptyMessage = 'No records found.',
+  emptyMessage = 'No records found.', initialSearch = '', highlightId,
 }: Props<T>) {
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialSearch);
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+
+  // Bring a deep-linked record into view without filtering the table, so the
+  // surrounding context stays visible. Filtering by an id that is not a visible
+  // column would hide the very row we were asked to show.
+  useEffect(() => {
+    if (!highlightId) return;
+    const el = document.querySelector(`[data-row-id="${CSS.escape(highlightId)}"]`);
+    el?.scrollIntoView({ block: 'center' });
+  }, [highlightId]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return data;
@@ -131,7 +144,7 @@ export default function DataTable<T extends { id: string }>({
               </tr>
             ) : (
               sorted.map(item => (
-                <tr key={item.id} className="hover:bg-slate-800/30 transition-colors">
+                <tr key={item.id} data-row-id={item.id} className={`hover:bg-slate-800/30 transition-colors ${highlightId && item.id === highlightId ? 'bg-blue-500/10 ring-1 ring-inset ring-blue-500/40' : ''}`}>
                   {columns.map(col => (
                     <td key={col.key} className="px-4 py-3 text-slate-300 whitespace-nowrap">
                       {col.render ? col.render(item) : String((item as Record<string, unknown>)[col.key] ?? '')}

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
+import { navigate } from '@/lib/nav';
 
 interface Item { id: string; workOrderId: string; assetId: string; permitType: string; permitNumber: string; issuedBy: string; issuedDate: string; expiryDate: string; status: string; description: string; hazards: string; precautions: string; approvedBy: string; }
 
@@ -36,7 +37,9 @@ export default function SafetyPage() {
     { key:'permitType', header:'Type', render: p => <span className="capitalize">{p.permitType.replace(/_/g,' ')}</span> },
     { key:'permitNumber', header:'Permit #' },
     { key:'description', header:'Description' },
-    { key:'assetId', header:'Asset' },
+    { key:'assetId', header:'Asset', render: s => s.assetId ? (
+      <button onClick={() => navigate('assets', { focusId: s.assetId })} className="text-blue-400 hover:text-blue-300 hover:underline text-xs" title="Open this asset">{s.assetId}</button>
+    ) : <span className="text-slate-600">-</span> },
     { key:'workOrderId', header:'WO' },
     { key:'status', header:'Status', render: p => <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium border ${statusColors[p.status]||''}`}>{p.status}</span> },
     { key:'issuedDate', header:'Issued' },

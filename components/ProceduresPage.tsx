@@ -5,6 +5,7 @@ import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
 import { Plus, Trash2, ChevronUp, ChevronDown, History, CheckCircle2, Archive } from 'lucide-react';
+import { navigate, type NavParams } from '@/lib/nav';
 
 type ResponseType = 'checkbox' | 'reading' | 'pass_fail' | 'text';
 type ProcedureStatus = 'draft' | 'approved' | 'retired';
@@ -70,7 +71,7 @@ const defaultProcedure = (): Procedure => ({
   steps: [emptyStep(1)], createdAt: '', updatedAt: '',
 });
 
-export default function ProceduresPage() {
+export default function ProceduresPage({ params }: { params?: NavParams }) {
   const { canEdit, user, loading: authLoading } = useAuth();
   const canApprove = !!user && (user.role === 'admin' || user.role === 'manager');
   const [items, setItems] = useState<Procedure[]>([]);
@@ -137,7 +138,9 @@ export default function ProceduresPage() {
       <span className={`inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium border capitalize ${statusBadge[p.status] || statusBadge.draft}`}>{p.status}</span>
     ) },
     { key: 'stepCount', header: 'Steps', render: p => <span className="font-mono">{p.stepCount ?? 0}</span> },
-    { key: 'assetId', header: 'Asset', render: p => <span className="text-xs text-slate-400">{p.assetId || 'Any'}</span> },
+    { key: 'assetId', header: 'Asset', render: p => p.assetId ? (
+      <button onClick={() => navigate('assets', { focusId: p.assetId })} className="text-xs text-blue-400 hover:text-blue-300 hover:underline" title="Open this asset">{p.assetId}</button>
+    ) : <span className="text-xs text-slate-600">Any</span> },
     { key: 'actions', header: '', render: p => (
       <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
         <button onClick={() => openHistory(p)} title="Revision history" className="text-slate-400 hover:text-white"><History className="w-3.5 h-3.5" /></button>
@@ -158,7 +161,8 @@ export default function ProceduresPage() {
         <h2 className="text-xl font-bold text-white">Procedures</h2>
         <p className="text-slate-400 text-sm mt-1">Reusable SOPs with approval and a revision history. Only <span className="text-green-400">approved</span> procedures can be applied to a work order. Editing an approved procedure returns it to draft for re-approval; checklists already copied keep the version they were taken from.</p>
       </div>
-      <DataTable data={items} columns={columns} onEdit={openEdit} onDelete={canEdit ? remove : undefined} onAdd={canEdit ? openNew : undefined}
+      <DataTable key={params?.focusId ?? ''} data={items} columns={columns} onEdit={openEdit} onDelete={canEdit ? remove : undefined} onAdd={canEdit ? openNew : undefined}
+        initialSearch="" highlightId={params?.focusId}
         searchPlaceholder="Search procedures..." canEdit={canEdit} canDelete={canEdit} emptyMessage="No procedures yet." />
       {showForm && (
         <Modal open={showForm} onClose={() => setShowForm(false)} title={editItem ? `Edit procedure: ${editItem.id}` : 'New procedure'}>

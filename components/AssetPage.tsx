@@ -10,8 +10,9 @@ import AssetForm from './AssetForm';
 import ImportTools from './ImportTools';
 import { List, GitBranch, Plus } from 'lucide-react';
 import { AssetRecord, emptyAsset, statusColors, criticalityColors, indexById } from './asset-types';
+import { type NavParams } from '@/lib/nav';
 
-export default function AssetPage() {
+export default function AssetPage({ params }: { params?: NavParams }) {
   const { canEdit, isAdmin, loading: authLoading } = useAuth();
   const [assets, setAssets] = useState<AssetRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,7 +62,10 @@ export default function AssetPage() {
   };
 
   const byId = indexById(assets);
-  const selected = selectedId ? byId.get(selectedId) ?? null : null;
+  // A link from search or another tab selects that asset; once the user clicks
+  // around the tree their own selection takes over.
+  const activeId = selectedId ?? params?.focusId ?? null;
+  const selected = activeId ? byId.get(activeId) ?? null : null;
 
   const columns: Column<AssetRecord>[] = [
     { key: 'name', header: 'Name' },
@@ -107,7 +111,7 @@ export default function AssetPage() {
           <div className="lg:col-span-2">
             <AssetTreeView
               assets={assets}
-              selectedId={selectedId}
+              selectedId={activeId}
               onSelect={setSelectedId}
               onAddChild={parentId => openNew(parentId)}
               canEdit={canEdit}

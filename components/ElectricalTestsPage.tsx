@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
+import { navigate } from '@/lib/nav';
 
 interface Item { id: string; assetId: string; testType: string; testDate: string; results: string; nextDue: string; testedBy: string; status: string; notes: string; }
 
@@ -36,7 +37,9 @@ export default function ElectricalTestsPage() {
   const filtered = filter==='all' ? items : items.filter(i => i.status===filter);
   const columns: Column<Item>[] = [
     { key:'testType', header:'Test', render: t => <span className="capitalize text-xs">{t.testType.replace(/_/g,' ')}</span> },
-    { key:'assetId', header:'Asset' },
+    { key:'assetId', header:'Asset', render: t => t.assetId ? (
+      <button onClick={() => navigate('assets', { focusId: t.assetId })} className="text-blue-400 hover:text-blue-300 hover:underline text-xs" title="Open this asset">{t.assetId}</button>
+    ) : <span className="text-slate-600">-</span> },
     { key:'status', header:'Status', render: t => <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium border ${sc[t.status]||''}`}>{t.status}</span> },
     { key:'testDate', header:'Date' },
     { key:'nextDue', header:'Next Due' },

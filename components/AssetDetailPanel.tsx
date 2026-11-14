@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, ClipboardList, CalendarCheck, ChevronRight } from 'lucide-react';
+import { navigate } from '@/lib/nav';
 import {
   AssetRecord, indexById, buildPath, statusColors, criticalityColors, warrantyDaysLeft,
 } from './asset-types';
@@ -128,6 +129,16 @@ export default function AssetDetailPanel({
               className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
               <Plus className="w-3.5 h-3.5" /> Add child asset
             </button>
+            <button onClick={() => navigate('work-orders', { assetId: asset.id })}
+              className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              title="Open the Work Orders tab filtered to this asset">
+              <ClipboardList className="w-3.5 h-3.5" /> Work orders ({openWorkOrders})
+            </button>
+            <button onClick={() => navigate('pm-schedule', { assetId: asset.id })}
+              className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              title="Open the PM Schedule tab filtered to this asset">
+              <CalendarCheck className="w-3.5 h-3.5" /> PM schedule
+            </button>
             {isAdmin && (
               <button onClick={() => onDelete(asset)}
                 className="flex items-center gap-1 text-red-400 hover:text-red-300 border border-red-500/30 hover:bg-red-500/10 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
@@ -191,11 +202,13 @@ export default function AssetDetailPanel({
         {related.length > 0 ? (
           <div className="space-y-1.5">
             {related.map(w => (
-              <div key={w.id} className="flex items-center gap-2 text-xs">
+              <button key={w.id} onClick={() => navigate('work-orders', { focusId: w.id })}
+                className="flex items-center gap-2 text-xs w-full text-left hover:bg-slate-800/60 rounded px-1 py-0.5 transition-colors"
+                title={`Open ${w.id} in Work Orders`}>
                 <span className={`px-1.5 py-0.5 rounded border ${workOrderStatusColors[w.status] || ''}`}>{w.status.replace(/_/g, ' ')}</span>
                 <span className="text-slate-300 truncate flex-1">{w.title}</span>
                 <span className="text-slate-500 font-mono flex-shrink-0">{w.id}</span>
-              </div>
+              </button>
             ))}
           </div>
         ) : (

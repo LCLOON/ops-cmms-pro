@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
+import { type NavParams } from '@/lib/nav';
 
 interface Vendor {
   id: string; name: string; contactName: string; email: string; phone: string;
@@ -16,7 +17,7 @@ const defaultVendor: Vendor = {
   website: '', paymentTerms: 'Net 30', notes: '', active: true, createdAt: '', updatedAt: '',
 };
 
-export default function VendorPage() {
+export default function VendorPage({ params }: { params?: NavParams }) {
   const { canEdit, isAdmin, loading: authLoading } = useAuth();
   const [items, setItems] = useState<Vendor[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,8 +62,9 @@ export default function VendorPage() {
   return (
     <div className="space-y-6">
       <div><h2 className="text-xl font-bold text-white">Vendors</h2><p className="text-slate-400 text-sm mt-1">Manage suppliers and service providers</p></div>
-      <DataTable data={items} columns={columns} onEdit={openEdit} onDelete={isAdmin ? remove : undefined} onAdd={canEdit ? openNew : undefined}
-        searchPlaceholder="Search vendors..." canEdit={canEdit} canDelete={isAdmin} emptyMessage="No vendors found." />
+      <DataTable key={`${params?.focusId ?? ''}|${params?.search ?? ''}`} data={items} columns={columns} onEdit={openEdit} onDelete={isAdmin ? remove : undefined} onAdd={canEdit ? openNew : undefined}
+        searchPlaceholder="Search vendors..." canEdit={canEdit} canDelete={isAdmin} emptyMessage="No vendors found."
+        initialSearch={params?.search ?? ''} highlightId={params?.focusId} />
       {showForm && (
         <Modal open={showForm} onClose={() => setShowForm(false)} title={editItem ? 'Edit Vendor' : 'New Vendor'}>
           <div className="space-y-4">

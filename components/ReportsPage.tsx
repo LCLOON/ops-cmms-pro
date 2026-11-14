@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { navigate } from '@/lib/nav';
 
 interface ComplianceItem { title: string; siteName: string; obligationType: string; nextDue: string; status: string; priority: string; }
 interface BacklogItem { aging: string; count: number; totalCost: number; }
@@ -150,7 +151,7 @@ export default function ReportsPage() {
             <p className="text-xs text-slate-500 mb-4">Assets with two or more corrective jobs in 90 days and no active PM schedule. These are the obvious candidates for preventive work.</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{pmGaps.map(g => (
               <div key={g.assetId} className="flex items-center justify-between bg-slate-800/50 border border-slate-700/60 rounded-lg px-3 py-2">
-                <span className="text-xs text-slate-200 truncate" title={g.assetName}>{g.assetName}</span>
+                <button onClick={() => navigate('pm-schedule', { assetId: g.assetId })} className="text-xs text-slate-200 hover:text-blue-300 truncate text-left" title="Open the PM Schedule for this asset">{g.assetName}</button>
                 <span className="text-xs text-amber-400 flex-shrink-0 ml-2">{g.failures} failures</span>
               </div>))}</div>
           </div>
@@ -168,7 +169,7 @@ export default function ReportsPage() {
               {availability.assets.length > 0 ? (
                 <div className="space-y-2">{availability.assets.map(a => (
                   <div key={a.assetId} className="flex items-center gap-3 text-xs">
-                    <span className="text-slate-300 truncate flex-1" title={a.assetName}>{a.assetName}{a.openDowntime && <span className="ml-1 text-[10px] text-red-400">DOWN</span>}</span>
+                    <button onClick={() => navigate('assets', { focusId: a.assetId })} className="text-slate-300 truncate flex-1 text-left hover:text-blue-300" title="Open this asset">{a.assetName}{a.openDowntime && <span className="ml-1 text-[10px] text-red-400">DOWN</span>}</button>
                     <span className="text-slate-500 flex-shrink-0">{a.downtimeHours}h / {a.incidents}</span>
                     <span className={`font-mono flex-shrink-0 ${a.availabilityPct < 90 ? 'text-red-400' : a.availabilityPct < 99 ? 'text-amber-400' : 'text-slate-400'}`}>{a.availabilityPct}%</span>
                   </div>))}</div>
@@ -211,7 +212,7 @@ export default function ReportsPage() {
           {warranty.length > 0 ? (
             <div className="space-y-2">{warranty.slice(0, 10).map(w => (
               <div key={w.id} className="flex items-center justify-between text-xs py-2 border-b border-slate-800/50">
-                <span className="text-slate-300 truncate" title={w.name}>{w.name}</span>
+                <button onClick={() => navigate('assets', { focusId: w.id })} className="text-slate-300 truncate hover:text-blue-300 text-left" title="Open this asset">{w.name}</button>
                 <span className={w.daysLeft < 0 ? 'text-red-400' : w.daysLeft <= 30 ? 'text-amber-400' : 'text-slate-400'}>
                   {w.daysLeft < 0 ? `expired ${Math.abs(w.daysLeft)}d ago` : `${w.daysLeft}d left`}
                 </span>

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
+import { navigate } from '@/lib/nav';
 
 interface Item { id: string; assetId: string; documentType: string; title: string; description: string; fileUrl: string; version: string; reviewDueDate: string; tags: string; active: boolean; }
 
@@ -36,7 +37,9 @@ export default function DocumentPage() {
     { key:'documentType', header:'Type', render: d => <span className="text-xs">{dtypeLabels[d.documentType]||d.documentType}</span> },
     { key:'version', header:'Ver' },
     { key:'reviewDueDate', header:'Review Due' },
-    { key:'assetId', header:'Asset' },
+    { key:'assetId', header:'Asset', render: d => d.assetId ? (
+      <button onClick={() => navigate('assets', { focusId: d.assetId })} className="text-blue-400 hover:text-blue-300 hover:underline text-xs" title="Open this asset">{d.assetId}</button>
+    ) : <span className="text-slate-600">-</span> },
     { key:'tags', header:'Tags' },
   ];
 

@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Menu } from 'lucide-react';
 import { useAuth } from '@/components/AuthContext';
+import { navigate, type NavIntent, type NavParams } from '@/lib/nav';
 import LoginScreen from '@/components/LoginScreen';
 import ChangePasswordScreen from '@/components/ChangePasswordScreen';
 import Sidebar from '@/components/Sidebar';
@@ -31,10 +32,25 @@ type Page = 'dashboard' | 'assets' | 'work-orders' | 'pm-schedule' | 'procedures
 export default function AppShell() {
   const { user, loading } = useAuth();
   const [page, setPage] = useState<Page>('dashboard');
+  // Deep-link context: which record the user was looking at when they followed
+  // a link from another tab.
+  const [navParams, setNavParams] = useState<NavParams>({});
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // Sidebar navigation is a fresh start, so it clears any deep-link context.
+  const goTo = useCallback((next: Page) => { setPage(next); setNavParams({}); }, []);
+
   useEffect(() => {
-    const handler = (e: Event) => setPage((e as CustomEvent).detail as Page);
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (typeof detail === 'string') { setPage(detail as Page); setNavParams({}); return; }
+      if (detail && typeof detail === 'object' && typeof detail.page === 'string') {
+        setPage(detail.page as Page);
+        const { page: _ignored, ...rest } = detail as NavIntent;
+        void _ignored;
+        setNavParams(rest);
+      }
+    };
     window.addEventListener('nav', handler);
     return () => window.removeEventListener('nav', handler);
   }, []);
@@ -50,13 +66,14 @@ export default function AppShell() {
 
   return (
     <div className="flex h-screen bg-slate-950">
-      <Sidebar active={page} onNavigate={setPage} mobileOpen={mobileOpen} onToggleMobile={() => setMobileOpen(o => !o)} />
+      <Sidebar active={page} onNavigate={goTo} mobileOpen={mobileOpen} onToggleMobile={() => setMobileOpen(o => !o)} />
       <main className="flex-1 overflow-auto">
         <div className="hidden lg:flex items-center justify-end gap-3 px-6 py-2 border-b border-slate-800/50">
           <GlobalSearch onSelect={(r) => {
-            if (r.type === 'Asset') setPage('assets');
-            else if (r.type === 'WO') setPage('work-orders');
-            else if (r.type === 'PM') setPage('pm-schedule');
+            // Search results open the record, not just the tab.
+            if (r.type === 'Asset') navigate('assets', { focusId: r.id });
+            else if (r.type === 'WO') navigate('work-orders', { focusId: r.id });
+            else if (r.type === 'PM') navigate('pm-schedule', { focusId: r.id });
           }} />
         </div>
         <div className="lg:hidden flex items-center gap-3 p-4 border-b border-slate-800">
@@ -65,13 +82,13 @@ export default function AppShell() {
         </div>
         <div className="p-4 lg:p-8">
           {page === 'dashboard' && <Dashboard />}
-          {page === 'assets' && <AssetPage />}
-          {page === 'work-orders' && <WorkOrderPage />}
-          {page === 'pm-schedule' && <PmSchedulePage />}
-          {page === 'procedures' && <ProceduresPage />}
+          {page === 'assets' && <AssetPage params={navParams} />}
+          {page === 'work-orders' && <WorkOrderPage params={navParams} />}
+          {page === 'pm-schedule' && <PmSchedulePage params={navParams} />}
+          {page === 'procedures' && <ProceduresPage params={navParams} />}
           {page === 'inventory' && <InventoryPage />}
-          {page === 'vendors' && <VendorPage />}
-          {page === 'purchase-orders' && <PurchaseOrderPage />}
+          {page === 'vendors' && <VendorPage params={navParams} />}
+          {page === 'purchase-orders' && <PurchaseOrderPage params={navParams} />}
           {page === 'compliance' && <CompliancePage />}
           {page === 'documents' && <DocumentPage />}
           {page === 'safety' && <SafetyPage />}

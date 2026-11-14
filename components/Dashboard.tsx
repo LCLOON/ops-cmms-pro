@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Wrench, ClipboardList, AlertTriangle, Package, CheckCircle2, BarChart3, DollarSign, TrendingUp, Clock, ShieldCheck } from 'lucide-react';
+import { navigate, type NavPage } from '@/lib/nav';
 
 interface Analytics {
   mttr: { assetId: string; assetName: string; mttrDays: number; workOrderCount: number }[];
@@ -11,7 +12,7 @@ interface Analytics {
   woByStatus: { status: string; count: number }[];
   woByType: { type: string; count: number }[];
   monthlyCosts: { month: string; labor: number; parts: number }[];
-  topCostAssets: { name: string; total: number }[];
+  topCostAssets: { name: string; assetId: string; total: number }[];
   inventoryValue: { totalItems: number; totalValue: number; lowStockCount: number };
   ytdStats: { totalWOs: number; totalLaborHours: number; totalPartsCost: number; avgResolutionDays: number };
   complianceOverdue: number;
@@ -20,7 +21,6 @@ interface Analytics {
 interface Stats { totalAssets: number; openWorkOrders: number; overduePMs: number; downAssets: number; lowStock: number; completedThisMonth: number; }
 
 export default function Dashboard() {
-  const navTo = (page: string) => window.dispatchEvent(new CustomEvent('nav', { detail: page }));
   const [stats, setStats] = useState<Stats | null>(null);
   const [a, setA] = useState<Analytics | null>(null);
 
@@ -36,8 +36,8 @@ export default function Dashboard() {
 
   if (!stats || !a) return <div className="text-slate-400 p-8">Loading dashboard...</div>;
 
-  const kpiCards = [
-    { label: 'Total Assets', nav: 'assets' as string | undefined, value: stats.totalAssets, icon: <Wrench className="w-5 h-5" />, color: 'blue' },
+  const kpiCards: { label: string; nav?: NavPage; value: number | string; icon: React.ReactNode; color: string }[] = [
+    { label: 'Total Assets', nav: 'assets', value: stats.totalAssets, icon: <Wrench className="w-5 h-5" />, color: 'blue' },
     { label: 'Open Work Orders', nav: 'work-orders', value: stats.openWorkOrders, icon: <ClipboardList className="w-5 h-5" />, color: 'amber' },
     { label: 'Overdue PMs', nav: 'pm-schedule', value: stats.overduePMs, icon: <AlertTriangle className="w-5 h-5" />, color: 'red' },
     { label: 'PM Compliance', value: a.pmCompliance.complianceRate + '%', icon: <CheckCircle2 className="w-5 h-5" />, color: 'green' },
@@ -67,7 +67,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {kpiCards.map(c => (
-          <div key={c.label} onClick={() => c.nav && navTo(c.nav)} className={`rounded-xl border p-5 cursor-pointer hover:border-slate-600 transition-all hover:scale-[1.02] ${clrs[c.color]}`}>
+          <div key={c.label} onClick={() => c.nav && navigate(c.nav)} className={`rounded-xl border p-5 cursor-pointer hover:border-slate-600 transition-all hover:scale-[1.02] ${clrs[c.color]}`}>
             <div className="flex items-center justify-between mb-3"><span className={tclrs[c.color]}>{c.icon}</span><span className="text-3xl font-bold text-white">{c.value}</span></div>
             <p className="text-sm text-slate-400">{c.label}</p>
           </div>
@@ -87,7 +87,7 @@ export default function Dashboard() {
           <h3 className="text-sm font-semibold text-white mb-4"><DollarSign className="w-4 h-4 inline mr-2 text-green-400" />Top Cost Assets</h3>
           {a.topCostAssets.length > 0 ? (
             <div className="space-y-3">{a.topCostAssets.map(x => (
-              <div key={x.name}><div className="flex justify-between text-xs mb-1"><span className="text-slate-400">{x.name}</span><span className="text-slate-500 font-mono">${x.total.toLocaleString()}</span></div>
+              <div key={x.name} onClick={() => x.assetId && navigate('assets', { focusId: x.assetId })} className={x.assetId ? 'cursor-pointer' : ''}><div className="flex justify-between text-xs mb-1"><span className="text-slate-400">{x.name}</span><span className="text-slate-500 font-mono">${x.total.toLocaleString()}</span></div>
                 <div className="h-3 bg-slate-800 rounded-full overflow-hidden"><div className="h-full rounded-full bg-green-500/60" style={{ width: `${(x.total / Math.max(1, a.topCostAssets[0]?.total || 1)) * 100}%` }} /></div></div>
             ))}</div>
           ) : <p className="text-slate-500 text-sm">No completed work orders yet.</p>}
@@ -99,14 +99,14 @@ export default function Dashboard() {
           <h3 className="text-sm font-semibold text-white mb-4"><Clock className="w-4 h-4 inline mr-2 text-amber-400" />MTTR — Mean Time To Repair (days)</h3>
           {a.mttr.length > 0 ? (
             <table className="w-full text-sm"><thead><tr className="text-xs text-slate-500 border-b border-slate-800"><th className="text-left py-2">Asset</th><th className="text-right py-2">MTTR</th><th className="text-right py-2">WOs</th></tr></thead>
-              <tbody>{a.mttr.slice(0, 5).map(m => <tr key={m.assetId} className="border-b border-slate-800/50"><td className="py-2 text-slate-300">{m.assetName}</td><td className="py-2 text-right font-mono text-slate-300">{m.mttrDays}d</td><td className="py-2 text-right text-slate-500">{m.workOrderCount}</td></tr>)}</tbody></table>
+              <tbody>{a.mttr.slice(0, 5).map(m => <tr key={m.assetId} onClick={() => m.assetId && navigate('assets', { focusId: m.assetId })} className="border-b border-slate-800/50 cursor-pointer hover:bg-slate-800/40"><td className="py-2 text-slate-300">{m.assetName}</td><td className="py-2 text-right font-mono text-slate-300">{m.mttrDays}d</td><td className="py-2 text-right text-slate-500">{m.workOrderCount}</td></tr>)}</tbody></table>
           ) : <p className="text-slate-500 text-sm">No resolution data yet.</p>}
         </div>
         <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
           <h3 className="text-sm font-semibold text-white mb-4"><TrendingUp className="w-4 h-4 inline mr-2 text-blue-400" />MTBF — Mean Time Between Failures</h3>
           {a.mtbf.length > 0 ? (
             <table className="w-full text-sm"><thead><tr className="text-xs text-slate-500 border-b border-slate-800"><th className="text-left py-2">Asset</th><th className="text-right py-2">MTBF</th><th className="text-right py-2">Failures</th></tr></thead>
-              <tbody>{a.mtbf.slice(0, 5).map(m => <tr key={m.assetId} className="border-b border-slate-800/50"><td className="py-2 text-slate-300">{m.assetName}</td><td className="py-2 text-right font-mono text-slate-300">{m.mtbfDays}d</td><td className="py-2 text-right text-slate-500">{m.failureCount}</td></tr>)}</tbody></table>
+              <tbody>{a.mtbf.slice(0, 5).map(m => <tr key={m.assetId} onClick={() => m.assetId && navigate('assets', { focusId: m.assetId })} className="border-b border-slate-800/50 cursor-pointer hover:bg-slate-800/40"><td className="py-2 text-slate-300">{m.assetName}</td><td className="py-2 text-right font-mono text-slate-300">{m.mtbfDays}d</td><td className="py-2 text-right text-slate-500">{m.failureCount}</td></tr>)}</tbody></table>
           ) : <p className="text-slate-500 text-sm">No failure data yet.</p>}
         </div>
       </div>

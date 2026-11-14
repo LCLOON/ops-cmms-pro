@@ -5,6 +5,7 @@ import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
 import { Plus, Trash2, Package } from 'lucide-react';
+import { navigate, type NavParams } from '@/lib/nav';
 
 interface PurchaseOrder {
   id: string; vendorId: string; vendorName?: string; poNumber: string;
@@ -25,7 +26,7 @@ const statusColors: Record<string, string> = {
   received: 'bg-green-500/20 text-green-400 border-green-500/30', cancelled: 'bg-red-500/20 text-red-400 border-red-500/30',
 };
 
-export default function PurchaseOrderPage() {
+export default function PurchaseOrderPage({ params }: { params?: NavParams }) {
   const { canEdit, loading: authLoading, user } = useAuth();
   const [items, setItems] = useState<PurchaseOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -60,7 +61,11 @@ export default function PurchaseOrderPage() {
 
   const columns: Column<PurchaseOrder>[] = [
     { key: 'id', header: 'PO #' },
-    { key: 'vendorName', header: 'Vendor', render: p => p.vendorName || <span className="text-slate-600">—</span> },
+    { key: 'vendorName', header: 'Vendor', render: p => p.vendorId ? (
+      <button onClick={() => navigate('vendors', { focusId: p.vendorId })}
+        className="text-blue-400 hover:text-blue-300 hover:underline text-xs text-left max-w-[160px] truncate"
+        title="Open this vendor">{p.vendorName || p.vendorId}</button>
+    ) : <span className="text-slate-600">none</span> },
     { key: 'status', header: 'Status', render: p => <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>{p.status}</span> },
     { key: 'orderDate', header: 'Order Date' },
     { key: 'expectedDate', header: 'Expected' },
@@ -72,8 +77,9 @@ export default function PurchaseOrderPage() {
   return (
     <div className="space-y-6">
       <div><h2 className="text-xl font-bold text-white">Purchase Orders</h2><p className="text-slate-400 text-sm mt-1">Create and track purchase orders with vendors</p></div>
-      <DataTable data={items} columns={columns} onEdit={openEdit} onDelete={canEdit ? remove : undefined} onAdd={canEdit ? openNew : undefined}
-        searchPlaceholder="Search POs..." canEdit={canEdit} canDelete={canEdit} emptyMessage="No purchase orders found." />
+      <DataTable key={`${params?.focusId ?? ''}|${params?.search ?? ''}`} data={items} columns={columns} onEdit={openEdit} onDelete={canEdit ? remove : undefined} onAdd={canEdit ? openNew : undefined}
+        searchPlaceholder="Search POs..." canEdit={canEdit} canDelete={canEdit} emptyMessage="No purchase orders found."
+        initialSearch={params?.search ?? ''} highlightId={params?.focusId} />
       {showForm && (
         <Modal open={showForm} onClose={() => setShowForm(false)} title={editItem ? `Edit PO: ${editItem.id}` : 'New Purchase Order'}>
           <POForm form={form} setForm={setForm} onSave={save} saving={saving} isEdit={!!editItem} />

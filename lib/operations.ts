@@ -169,6 +169,14 @@ export async function seedDatabase(): Promise<void> {
 }
 
 // ─── Users ─────────────────────────────────────────────────────
+// libSQL rejects `undefined` as a bind value. Several routes forward the request
+// body straight into these writers without schema validation, so an omitted
+// optional field became a 500. Coerce at the boundary instead.
+const str = (v: unknown): string => (v === null || v === undefined ? '' : String(v));
+const num = (v: unknown): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
 export async function getUserByUsername(username: string): Promise<DbUser | null> {
   const rs = await (await getDb()).execute({ sql: 'SELECT * FROM users WHERE username = ? AND active = 1', args: [username] });
   const row = rs.rows[0];
@@ -887,7 +895,7 @@ export async function upsertVendor(v: Vendor): Promise<void> {
   await (await getDb()).execute({ sql: `INSERT INTO vendors (id,name,contact_name,email,phone,address,website,payment_terms,notes,active,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,contact_name=excluded.contact_name,email=excluded.email,phone=excluded.phone,address=excluded.address,website=excluded.website,payment_terms=excluded.payment_terms,notes=excluded.notes,active=excluded.active,updated_at=excluded.updated_at`,
-    args: [v.id, v.name, v.contactName, v.email, v.phone, v.address, v.website, v.paymentTerms, v.notes, v.active ? 1 : 0] });
+    args: [str(v.id), str(v.name), str(v.contactName), str(v.email), str(v.phone), str(v.address), str(v.website), str(v.paymentTerms), str(v.notes), v.active ? 1 : 0] });
 }
 
 export async function deleteVendor(id: string): Promise<void> {
@@ -919,7 +927,7 @@ export async function upsertPurchaseOrder(po: PurchaseOrder): Promise<void> {
   await db.execute({ sql: `INSERT INTO purchase_orders (id,vendor_id,po_number,status,order_date,expected_date,received_date,total_cost,notes,created_by,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET vendor_id=excluded.vendor_id,po_number=excluded.po_number,status=excluded.status,order_date=excluded.order_date,expected_date=excluded.expected_date,received_date=excluded.received_date,total_cost=excluded.total_cost,notes=excluded.notes,updated_at=excluded.updated_at`,
-    args: [po.id, po.vendorId || null, po.poNumber, po.status, po.orderDate, po.expectedDate, po.receivedDate, po.totalCost, po.notes, po.createdBy] });
+    args: [str(po.id), str(po.vendorId) || null, str(po.poNumber), str(po.status) || 'draft', str(po.orderDate), str(po.expectedDate), str(po.receivedDate), num(po.totalCost), str(po.notes), str(po.createdBy)] });
 
   if (po.status === 'received' && !wasReceived) {
     const items = await db.execute({ sql: 'SELECT inventory_item_id, quantity FROM po_items WHERE po_id = ?', args: [po.id] });
@@ -950,7 +958,7 @@ export async function getPoItems(poId: string): Promise<PoItem[]> {
 
 export async function addPoItem(item: { poId: string; inventoryItemId: string; itemName: string; quantity: number; unitCost: number }): Promise<void> {
   const db = await getDb();
-  await db.execute({ sql: 'INSERT INTO po_items (po_id, inventory_item_id, item_name, quantity, unit_cost) VALUES (?,?,?,?,?)', args: [item.poId, item.inventoryItemId, item.itemName, item.quantity, item.unitCost] });
+  await db.execute({ sql: 'INSERT INTO po_items (po_id, inventory_item_id, item_name, quantity, unit_cost) VALUES (?,?,?,?,?)', args: [str(item.poId), str(item.inventoryItemId), str(item.itemName), num(item.quantity), num(item.unitCost)] });
   const totalRs = await db.execute({ sql: 'SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM po_items WHERE po_id = ?', args: [item.poId] });
   const total = (totalRs.rows[0] as unknown as { t: number }).t;
   await db.execute({ sql: 'UPDATE purchase_orders SET total_cost = ? WHERE id = ?', args: [total, item.poId] });
@@ -978,7 +986,7 @@ export async function getMeterReadings(assetId: string): Promise<MeterReading[]>
 }
 
 export async function addMeterReading(entry: { assetId: string; readingType: string; value: number; unit: string; readingDate: string; recordedBy: string; notes: string }): Promise<MeterReading> {
-  const result = await (await getDb()).execute({ sql: 'INSERT INTO meter_readings (asset_id, reading_type, value, unit, reading_date, recorded_by, notes) VALUES (?,?,?,?,?,?,?)', args: [entry.assetId, entry.readingType, entry.value, entry.unit, entry.readingDate, entry.recordedBy, entry.notes] });
+  const result = await (await getDb()).execute({ sql: 'INSERT INTO meter_readings (asset_id, reading_type, value, unit, reading_date, recorded_by, notes) VALUES (?,?,?,?,?,?,?)', args: [str(entry.assetId), str(entry.readingType) || 'runtime_hours', num(entry.value), str(entry.unit), str(entry.readingDate), str(entry.recordedBy), str(entry.notes)] });
   return { id: Number(result.lastInsertRowid), ...entry, createdAt: new Date().toISOString() };
 }
 
@@ -1022,7 +1030,7 @@ export interface AnalyticsData {
   woByStatus: { status: string; count: number }[];
   woByType: { type: string; count: number }[];
   monthlyCosts: { month: string; labor: number; parts: number }[];
-  topCostAssets: { name: string; total: number }[];
+  topCostAssets: { name: string; assetId: string; total: number }[];
   inventoryValue: { totalItems: number; totalValue: number; lowStockCount: number };
   ytdStats: { totalWOs: number; totalLaborHours: number; totalPartsCost: number; avgResolutionDays: number };
   complianceOverdue: number;
@@ -1135,12 +1143,13 @@ export async function getAnalytics(): Promise<AnalyticsData> {
   // Top cost assets
   const topCostAssets = ((await db.execute({
     sql: `
-    SELECT COALESCE(a.name, 'Unassigned') as name, COALESCE(SUM(w.labor_hours),0)*? + COALESCE(SUM(w.parts_cost),0) as total
+    SELECT COALESCE(a.name, 'Unassigned') as name, COALESCE(w.asset_id, '') as assetId,
+      COALESCE(SUM(w.labor_hours),0)*? + COALESCE(SUM(w.parts_cost),0) as total
     FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' GROUP BY w.asset_id ORDER BY total DESC LIMIT 5
   `,
     args: [laborRate],
-  })).rows as unknown as { name: string; total: number }[]);
+  })).rows as unknown as { name: string; assetId: string; total: number }[]);
 
   // Inventory value
   const invStats = (await db.execute(`
@@ -1282,7 +1291,7 @@ export async function upsertSite(site: Site): Promise<void> {
   await (await getDb()).execute({ sql: `INSERT INTO sites (id,name,ferc_no,river_system,river_mile,capacity_mw,county,state,operator,year_built,status,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,ferc_no=excluded.ferc_no,river_system=excluded.river_system,river_mile=excluded.river_mile,capacity_mw=excluded.capacity_mw,county=excluded.county,state=excluded.state,operator=excluded.operator,year_built=excluded.year_built,status=excluded.status,updated_at=excluded.updated_at`,
-    args: [site.id, site.name, site.fercNo, site.riverSystem, site.riverMile, site.capacityMw, site.county, site.state, site.operator, site.yearBuilt, site.status] });
+    args: [str(site.id), str(site.name), str(site.fercNo), str(site.riverSystem), num(site.riverMile), str(site.capacityMw), str(site.county), str(site.state), str(site.operator), num(site.yearBuilt), str(site.status) || 'operational'] });
 }
 
 // ─── Compliance Obligations ────────────────────────────────────
@@ -1306,7 +1315,7 @@ export async function upsertComplianceObligation(o: ComplianceObligation): Promi
   await (await getDb()).execute({ sql: `INSERT INTO compliance_obligations (id,site_id,obligation_type,title,description,regulation_ref,frequency,last_completed,next_due,owner_role,evidence_required,status,priority,notes,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET obligation_type=excluded.obligation_type,title=excluded.title,description=excluded.description,regulation_ref=excluded.regulation_ref,frequency=excluded.frequency,last_completed=excluded.last_completed,next_due=excluded.next_due,owner_role=excluded.owner_role,evidence_required=excluded.evidence_required,status=excluded.status,priority=excluded.priority,notes=excluded.notes,updated_at=excluded.updated_at`,
-    args: [o.id, o.siteId || null, o.obligationType, o.title, o.description, o.regulationRef, o.frequency, o.lastCompleted, o.nextDue, o.ownerRole, o.evidenceRequired, o.status, o.priority, o.notes] });
+    args: [str(o.id), str(o.siteId) || null, str(o.obligationType) || 'other', str(o.title), str(o.description), str(o.regulationRef), str(o.frequency) || 'annual', str(o.lastCompleted), str(o.nextDue), str(o.ownerRole), str(o.evidenceRequired), str(o.status) || 'open', str(o.priority) || 'high', str(o.notes)] });
 }
 
 // ─── Inspections ───────────────────────────────────────────────
@@ -1331,7 +1340,7 @@ export async function upsertInspection(i: Inspection): Promise<void> {
   await (await getDb()).execute({ sql: `INSERT INTO inspections (id,asset_id,compliance_obligation_id,inspection_type,title,description,scheduled_date,completed_date,inspector,findings,recommendations,corrective_actions,readings,photos,status,priority,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET inspection_type=excluded.inspection_type,title=excluded.title,description=excluded.description,scheduled_date=excluded.scheduled_date,completed_date=excluded.completed_date,inspector=excluded.inspector,findings=excluded.findings,recommendations=excluded.recommendations,corrective_actions=excluded.corrective_actions,readings=excluded.readings,photos=excluded.photos,status=excluded.status,priority=excluded.priority,updated_at=excluded.updated_at`,
-    args: [i.id, i.assetId || null, i.complianceObligationId || null, i.inspectionType, i.title, i.description, i.scheduledDate, i.completedDate, i.inspector, i.findings, i.recommendations, i.correctiveActions, i.readings, i.photos, i.status, i.priority] });
+    args: [str(i.id), str(i.assetId) || null, str(i.complianceObligationId) || null, str(i.inspectionType) || 'visual', str(i.title), str(i.description), str(i.scheduledDate), str(i.completedDate), str(i.inspector), str(i.findings), str(i.recommendations), str(i.correctiveActions), str(i.readings), str(i.photos), str(i.status) || 'scheduled', str(i.priority) || 'medium'] });
 }
 
 // ─── Documents ─────────────────────────────────────────────────
@@ -1353,7 +1362,7 @@ export async function upsertDocument(d: Document): Promise<void> {
   await (await getDb()).execute({ sql: `INSERT INTO documents (id,asset_id,document_type,title,description,file_path,file_url,version,uploaded_by,upload_date,review_due_date,tags,active,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET document_type=excluded.document_type,title=excluded.title,description=excluded.description,file_path=excluded.file_path,file_url=excluded.file_url,version=excluded.version,review_due_date=excluded.review_due_date,tags=excluded.tags,active=excluded.active,updated_at=excluded.updated_at`,
-    args: [d.id, d.assetId || null, d.documentType, d.title, d.description, d.filePath, d.fileUrl, d.version, d.uploadedBy, d.uploadDate, d.reviewDueDate || '', d.tags, d.active ? 1 : 0] });
+    args: [str(d.id), str(d.assetId) || null, str(d.documentType) || 'other', str(d.title), str(d.description), str(d.filePath), str(d.fileUrl), str(d.version) || '1.0', str(d.uploadedBy), str(d.uploadDate), str(d.reviewDueDate), str(d.tags), d.active === false ? 0 : 1] });
 }
 
 // ─── Safety Permits ────────────────────────────────────────────
@@ -1376,7 +1385,7 @@ export async function upsertSafetyPermit(s: SafetyPermit): Promise<void> {
   await (await getDb()).execute({ sql: `INSERT INTO safety_permits (id,work_order_id,asset_id,permit_type,permit_number,issued_by,issued_date,expiry_date,status,description,hazards,precautions,approved_by,attachments,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET permit_type=excluded.permit_type,status=excluded.status,issued_by=excluded.issued_by,expiry_date=excluded.expiry_date,description=excluded.description,hazards=excluded.hazards,precautions=excluded.precautions,approved_by=excluded.approved_by,attachments=excluded.attachments,updated_at=excluded.updated_at`,
-    args: [s.id, s.workOrderId || null, s.assetId || null, s.permitType, s.permitNumber, s.issuedBy, s.issuedDate, s.expiryDate, s.status, s.description, s.hazards, s.precautions, s.approvedBy, s.attachments] });
+    args: [str(s.id), str(s.workOrderId) || null, str(s.assetId) || null, str(s.permitType) || 'other', str(s.permitNumber), str(s.issuedBy), str(s.issuedDate), str(s.expiryDate), str(s.status) || 'draft', str(s.description), str(s.hazards), str(s.precautions), str(s.approvedBy), str(s.attachments)] });
 }
 
 // ─── Electrical Tests ──────────────────────────────────────────
@@ -1396,7 +1405,7 @@ export async function upsertElectricalTest(t: ElectricalTest): Promise<void> {
   await (await getDb()).execute({ sql: `INSERT INTO electrical_tests (id,asset_id,test_type,test_date,results,next_due,tested_by,status,notes,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET test_type=excluded.test_type,test_date=excluded.test_date,results=excluded.results,next_due=excluded.next_due,tested_by=excluded.tested_by,status=excluded.status,notes=excluded.notes,updated_at=excluded.updated_at`,
-    args: [t.id, t.assetId || null, t.testType, t.testDate, t.results, t.nextDue, t.testedBy, t.status, t.notes] });
+    args: [str(t.id), str(t.assetId) || null, str(t.testType) || 'other', str(t.testDate), str(t.results), str(t.nextDue), str(t.testedBy), str(t.status) || 'pending', str(t.notes)] });
 }
 
 // ─── Backlog aging (for dashboard / reports) ──────────────────

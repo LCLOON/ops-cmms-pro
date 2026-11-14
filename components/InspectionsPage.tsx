@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
+import { navigate } from '@/lib/nav';
 
 interface Item { id: string; assetId: string; complianceObligationId: string; inspectionType: string; title: string; description: string; scheduledDate: string; completedDate: string; inspector: string; findings: string; recommendations: string; correctiveActions: string; status: string; priority: string; }
 
@@ -43,7 +44,9 @@ export default function InspectionsPage() {
     { key:'scheduledDate', header:'Scheduled' },
     { key:'completedDate', header:'Completed' },
     { key:'inspector', header:'Inspector' },
-    { key:'assetId', header:'Asset' },
+    { key:'assetId', header:'Asset', render: i => i.assetId ? (
+      <button onClick={() => navigate('assets', { focusId: i.assetId })} className="text-blue-400 hover:text-blue-300 hover:underline text-xs" title="Open this asset">{i.assetId}</button>
+    ) : <span className="text-slate-600">-</span> },
   ];
 
   if (loading) return <div className="text-slate-400 p-8">Loading...</div>;
