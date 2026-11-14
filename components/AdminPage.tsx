@@ -23,6 +23,9 @@ export default function AdminPage() {
   const [editingUser, setEditingUser] = useState<UserRow | null>(null);
   const [showUserForm, setShowUserForm] = useState(false);
   const [userForm, setUserForm] = useState<UserFormState>(defaultUser);
+  const [orgLaborRate, setOrgLaborRate] = useState(75);
+  const [savingOrg, setSavingOrg] = useState(false);
+  const [orgSaved, setOrgSaved] = useState(false);
 
   const fetchSites = useCallback(() =>
     fetch('/api/config?type=sites').then(r => r.json()).then(d => { if (d.sites) setSites(d.sites); }).catch(() => {}), []);
@@ -30,9 +33,22 @@ export default function AdminPage() {
   const fetchUsers = useCallback(() =>
     fetch('/api/users').then(r => r.json()).then(d => { if (d.users) setUsers(d.users); }).catch(() => {}), []);
 
+  const fetchOrg = useCallback(() =>
+    fetch('/api/config').then(r => r.json()).then(d => { if (d.config) setOrgLaborRate(d.config.laborRate ?? 75); }).catch(() => {}), []);
+
   useEffect(() => {
-    Promise.all([fetchSites(), fetchUsers()]).finally(() => setLoading(false));
-  }, [fetchSites, fetchUsers]);
+    Promise.all([fetchSites(), fetchUsers(), fetchOrg()]).finally(() => setLoading(false));
+  }, [fetchSites, fetchUsers, fetchOrg]);
+
+  const saveOrg = async () => {
+    if (!Number.isFinite(orgLaborRate) || orgLaborRate < 0) { alert('Labor rate must be a non-negative number.'); return; }
+    setSavingOrg(true); setOrgSaved(false);
+    try {
+      const r = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: { laborRate: orgLaborRate } }) });
+      if (!r.ok) { alert((await r.json()).error); return; }
+      setOrgSaved(true);
+    } catch { alert('Save failed'); } finally { setSavingOrg(false); }
+  };
 
   const openSiteEdit = (s: Site) => { setSiteForm({ ...s }); setEditingSite(s); setShowSiteForm(true); };
   const openSiteNew = () => { setSiteForm(defaultSite); setEditingSite(null); setShowSiteForm(true); };
@@ -105,6 +121,26 @@ export default function AdminPage() {
             <div className="flex justify-between px-3 py-2 bg-slate-800/50 rounded"><span className="text-blue-400 font-medium">Technician</span><span className="text-slate-500">Edit WOs, record labor, update PMs</span></div>
             <div className="flex justify-between px-3 py-2 bg-slate-800/50 rounded"><span className="text-slate-400 font-medium">Viewer</span><span className="text-slate-500">Read-only access to all data</span></div>
           </div>
+        </div>
+      </div>
+      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+        <h3 className="text-sm font-semibold text-white mb-1">Costing Settings</h3>
+        <p className="text-xs text-slate-500 mb-4">
+          The labor rate drives every cost figure: cost by asset, monthly spend, backlog value, and top cost assets.
+          Labour hours recorded on work orders are multiplied by this rate.
+        </p>
+        <div className="flex items-end gap-3">
+          <div className="w-52">
+            <label htmlFor="labor-rate" className="block text-xs text-slate-500 mb-1">Labor rate ($ / hour)</label>
+            <input id="labor-rate" type="number" min={0} step="0.5" value={orgLaborRate}
+              onChange={e => { setOrgLaborRate(Number(e.target.value)); setOrgSaved(false); }}
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <button onClick={saveOrg} disabled={savingOrg}
+            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+            {savingOrg ? 'Saving...' : 'Save'}
+          </button>
+          {orgSaved && <span className="text-xs text-green-400 pb-2">Saved</span>}
         </div>
       </div>
       {showSiteForm && (

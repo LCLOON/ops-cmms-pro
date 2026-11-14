@@ -121,6 +121,9 @@ async function initSchema(db: Client): Promise<void> {
     ['pm_schedules', pmCols],
     ['procedures', procedureCols],
     ['wo_checklist_items', checklistCols],
+    // Every cost figure is labour hours x rate, so the rate is a first-class
+    // setting rather than a constant baked into the queries.
+    ['site_config', [['labor_rate', 'ALTER TABLE site_config ADD COLUMN labor_rate REAL NOT NULL DEFAULT 75']]],
   ];
 
   await db.executeMultiple(`
@@ -145,6 +148,7 @@ async function initSchema(db: Client): Promise<void> {
       manager_name TEXT NOT NULL DEFAULT '',
       manager_email TEXT NOT NULL DEFAULT '',
       manager_phone TEXT NOT NULL DEFAULT '',
+      labor_rate REAL NOT NULL DEFAULT 75,
       setup_complete INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );

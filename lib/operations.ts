@@ -453,13 +453,44 @@ export async function deleteInventoryItem(id: string): Promise<void> {
 export async function getSiteConfig(): Promise<SiteConfig> {
   const rs = await (await getDb()).execute('SELECT * FROM site_config WHERE id = 1');
   const row = rs.rows[0] as unknown as Record<string, unknown> | undefined;
-  if (!row) return { companyName: '', siteName: '', siteAddress: '', managerName: '', managerEmail: '', managerPhone: '', setupComplete: false };
+  if (!row) return { companyName: '', siteName: '', siteAddress: '', managerName: '', managerEmail: '', managerPhone: '', laborRate: 75, setupComplete: false };
   return {
     companyName: row.company_name as string, siteName: row.site_name as string,
     siteAddress: row.site_address as string, managerName: row.manager_name as string,
     managerEmail: row.manager_email as string, managerPhone: row.manager_phone as string,
+    laborRate: Number(row.labor_rate) >= 0 ? Number(row.labor_rate) : 75,
     setupComplete: !!(row.setup_complete as number),
   };
+}
+
+// Labour rate used by every cost calculation. Falls back to the historical
+// default when the column is absent or nonsensical, so reporting never breaks.
+export async function getLaborRate(): Promise<number> {
+  try {
+    const rs = await (await getDb()).execute('SELECT labor_rate FROM site_config WHERE id = 1');
+    const row = rs.rows[0] as unknown as { labor_rate: number } | undefined;
+    const rate = Number(row?.labor_rate);
+    return Number.isFinite(rate) && rate >= 0 ? rate : 75;
+  } catch {
+    return 75;
+  }
+}
+
+// Partial update of the organisation settings. Used by the admin screen so the
+// labour rate can be corrected without touching the database directly.
+export async function updateSiteConfig(patch: Partial<Omit<SiteConfig, 'setupComplete'>>): Promise<SiteConfig> {
+  const db = await getDb();
+  const current = await getSiteConfig();
+  const merged = { ...current, ...patch };
+  const rate = Number(merged.laborRate);
+  const laborRate = Number.isFinite(rate) && rate >= 0 ? rate : 75;
+  // The row is created by the seed, but never assume it exists.
+  await db.execute('INSERT OR IGNORE INTO site_config (id) VALUES (1)');
+  await db.execute({
+    sql: `UPDATE site_config SET company_name=?, site_name=?, site_address=?, manager_name=?, manager_email=?, manager_phone=?, labor_rate=?, updated_at=datetime('now') WHERE id = 1`,
+    args: [merged.companyName, merged.siteName, merged.siteAddress, merged.managerName, merged.managerEmail, merged.managerPhone, laborRate],
+  });
+  return { ...merged, laborRate };
 }
 
 // ─── Dashboard Stats ───────────────────────────────────────────
@@ -845,15 +876,20 @@ export async function getAnalytics(): Promise<AnalyticsData> {
     ORDER BY mtbfDays ASC
   `)).rows as unknown as { assetId: string; assetName: string; mtbfDays: number; failureCount: number }[];
 
-  // Cost by asset
-  const costByAsset = (await db.execute(`
+  // Cost by asset. The labour rate is a setting, not a constant — it is bound
+  // as a parameter (twice, for the labour and total columns).
+  const laborRate = await getLaborRate();
+  const costByAsset = (await db.execute({
+    sql: `
     SELECT COALESCE(w.asset_id, '') as assetId, COALESCE(a.name, 'Unassigned') as assetName,
-      COALESCE(SUM(w.labor_hours), 0) * 75 as laborCost,
+      COALESCE(SUM(w.labor_hours), 0) * ? as laborCost,
       COALESCE(SUM(w.parts_cost), 0) as partsCost,
-      COALESCE(SUM(w.labor_hours), 0) * 75 + COALESCE(SUM(w.parts_cost), 0) as totalCost
+      COALESCE(SUM(w.labor_hours), 0) * ? + COALESCE(SUM(w.parts_cost), 0) as totalCost
     FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' GROUP BY w.asset_id ORDER BY totalCost DESC
-  `)).rows as unknown as { assetId: string; assetName: string; laborCost: number; partsCost: number; totalCost: number }[];
+  `,
+    args: [laborRate, laborRate],
+  })).rows as unknown as { assetId: string; assetName: string; laborCost: number; partsCost: number; totalCost: number }[];
 
   // PM Compliance. Deferred PMs are excluded (they are consciously parked, with
   // an approver) and runtime-hour PMs are evaluated on meter hours, not dates.
@@ -881,20 +917,26 @@ export async function getAnalytics(): Promise<AnalyticsData> {
   const woByType = ((await db.execute(`SELECT type, COUNT(*) as count FROM work_orders GROUP BY type`)).rows as unknown as { type: string; count: number }[]);
 
   // Monthly costs (last 6 months)
-  const monthlyCosts = ((await db.execute(`
+  const monthlyCosts = ((await db.execute({
+    sql: `
     SELECT strftime('%Y-%m', completed_date) as month,
-      COALESCE(SUM(labor_hours), 0) * 75 as labor,
+      COALESCE(SUM(labor_hours), 0) * ? as labor,
       COALESCE(SUM(parts_cost), 0) as parts
     FROM work_orders WHERE status = 'completed' AND completed_date >= date('now','-6 months')
     GROUP BY month ORDER BY month
-  `)).rows as unknown as { month: string; labor: number; parts: number }[]);
+  `,
+    args: [laborRate],
+  })).rows as unknown as { month: string; labor: number; parts: number }[]);
 
   // Top cost assets
-  const topCostAssets = ((await db.execute(`
-    SELECT COALESCE(a.name, 'Unassigned') as name, COALESCE(SUM(w.labor_hours),0)*75 + COALESCE(SUM(w.parts_cost),0) as total
+  const topCostAssets = ((await db.execute({
+    sql: `
+    SELECT COALESCE(a.name, 'Unassigned') as name, COALESCE(SUM(w.labor_hours),0)*? + COALESCE(SUM(w.parts_cost),0) as total
     FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' GROUP BY w.asset_id ORDER BY total DESC LIMIT 5
-  `)).rows as unknown as { name: string; total: number }[]);
+  `,
+    args: [laborRate],
+  })).rows as unknown as { name: string; total: number }[]);
 
   // Inventory value
   const invStats = (await db.execute(`
@@ -1061,7 +1103,10 @@ export async function upsertElectricalTest(t: ElectricalTest): Promise<void> {
 
 // ─── Backlog aging (for dashboard / reports) ──────────────────
 export async function getBacklogAging(): Promise<{ aging: string; count: number; totalCost: number }[]> {
-  const rs = await (await getDb()).execute(`
+  const db = await getDb();
+  const laborRate = await getLaborRate();
+  const rs = await db.execute({
+    sql: `
     SELECT
       CASE
         WHEN julianday('now') - julianday(due_date) > 90 THEN '90+ days'
@@ -1071,14 +1116,16 @@ export async function getBacklogAging(): Promise<{ aging: string; count: number;
         ELSE 'Not overdue'
       END as aging,
       COUNT(*) as count,
-      COALESCE(SUM(labor_hours * 75 + parts_cost), 0) as totalCost
+      COALESCE(SUM(labor_hours * ? + parts_cost), 0) as totalCost
     FROM work_orders WHERE status NOT IN ('completed','cancelled')
     GROUP BY aging ORDER BY
       CASE aging
         WHEN '90+ days' THEN 1 WHEN '30-90 days' THEN 2
         WHEN '7-30 days' THEN 3 WHEN '1-7 days' THEN 4 ELSE 5
       END
-  `);
+  `,
+    args: [laborRate],
+  });
   return rs.rows as unknown as { aging: string; count: number; totalCost: number }[];
 }
 

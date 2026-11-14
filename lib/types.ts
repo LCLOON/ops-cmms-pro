@@ -86,6 +86,9 @@ export interface SiteConfig {
   managerName: string;
   managerEmail: string;
   managerPhone: string;
+  // Currency per labour hour. All cost reporting is derived from this, so it is
+  // a setting rather than a constant.
+  laborRate: number;
   setupComplete: boolean;
 }
 
