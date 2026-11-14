@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { transitionWorkOrderStatus, getValidStatusTransitions } from '@/lib/operations';
+import { transitionWorkOrderStatus, getValidStatusTransitions, getWorkOrder, logAudit } from '@/lib/operations';
 
 export async function POST(request: Request) {
   try {
@@ -11,8 +11,20 @@ export async function POST(request: Request) {
     const { id, status } = await request.json();
     if (!id || !status) return NextResponse.json({ error: 'id and status required' }, { status: 400 });
 
+    // Read the prior status BEFORE transitioning — reading afterwards records
+    // the new value twice and loses the before/after pair.
+    const prior = await getWorkOrder(id);
+
     const result = await transitionWorkOrderStatus(id, status);
     if (!result.ok) return NextResponse.json({ error: result.error || 'Invalid status transition' }, { status: 400 });
+
+    // Status changes are the compliance-critical work-order events, so record
+    // the before/after rather than just the new value.
+    await logAudit({
+      userId: session.userId, username: session.username,
+      action: 'work_order.transition', entityType: 'work_order', entityId: id,
+      details: `${prior?.status ?? '?'} -> ${status}`,
+    });
 
     return NextResponse.json({ success: true, validTransitions: getValidStatusTransitions(status) });
   } catch {

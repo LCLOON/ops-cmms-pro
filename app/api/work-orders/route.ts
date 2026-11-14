@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { getWorkOrders, getWorkOrder, upsertWorkOrder, deleteWorkOrder, getCompletionBlockers } from '@/lib/operations';
+import { getWorkOrders, getWorkOrder, upsertWorkOrder, deleteWorkOrder, getCompletionBlockers, logAudit } from '@/lib/operations';
 import { workOrderSchema } from '@/lib/validations';
 
 // Both POST (which upserts by id) and PUT write the status column directly, so
@@ -52,6 +52,12 @@ export async function POST(request: Request) {
       updatedAt: now,
     };
     await upsertWorkOrder(wo);
+    await logAudit({
+      userId: session.userId, username: session.username,
+      action: priorRow ? 'work_order.update' : 'work_order.create',
+      entityType: 'work_order', entityId: id,
+      details: `${wo.title} (${wo.status})`,
+    });
     return NextResponse.json(wo);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -76,6 +82,11 @@ export async function PUT(request: Request) {
     if (blocked) return NextResponse.json({ error: blocked }, { status: 400 });
 
     await upsertWorkOrder({ ...parsed.data, id: body.id, completedDate: existing.completedDate, createdAt: existing.createdAt, updatedAt: new Date().toISOString() });
+    await logAudit({
+      userId: session.userId, username: session.username,
+      action: 'work_order.update', entityType: 'work_order', entityId: body.id,
+      details: `${parsed.data.title} (${existing.status} -> ${parsed.data.status})`,
+    });
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -91,6 +102,7 @@ export async function DELETE(request: Request) {
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
     await deleteWorkOrder(id);
+    await logAudit({ userId: session.userId, username: session.username, action: 'work_order.delete', entityType: 'work_order', entityId: id, details: '' });
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

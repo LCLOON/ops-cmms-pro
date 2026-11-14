@@ -8,6 +8,7 @@ interface Site { id: string; name: string; fercNo: string; capacityMw: string; r
 
 interface UserRow { id: number; username: string; display_name: string; role: string; active: number; force_password_change: number; last_login_at: string | null; }
 interface UserFormState { username: string; display_name: string; role: string; active: number; password: string; force_password_change: number; }
+interface AuditRow { id: number; timestamp: string; username: string; action: string; entityType: string; entityId: string; details: string; }
 
 const defaultSite: Site = { id:'', name:'', fercNo:'', capacityMw:'', riverMile:0, yearBuilt:0, status:'operational', operator:'', riverSystem:'Kennebec River', county:'', state:'ME' };
 const defaultUser: UserFormState = { username: '', display_name: '', role: 'technician', active: 1, password: '', force_password_change: 1 };
@@ -26,6 +27,7 @@ export default function AdminPage() {
   const [orgLaborRate, setOrgLaborRate] = useState(75);
   const [savingOrg, setSavingOrg] = useState(false);
   const [orgSaved, setOrgSaved] = useState(false);
+  const [audit, setAudit] = useState<AuditRow[]>([]);
 
   const fetchSites = useCallback(() =>
     fetch('/api/config?type=sites').then(r => r.json()).then(d => { if (d.sites) setSites(d.sites); }).catch(() => {}), []);
@@ -36,9 +38,12 @@ export default function AdminPage() {
   const fetchOrg = useCallback(() =>
     fetch('/api/config').then(r => r.json()).then(d => { if (d.config) setOrgLaborRate(d.config.laborRate ?? 75); }).catch(() => {}), []);
 
+  const fetchAudit = useCallback(() =>
+    fetch('/api/audit?limit=50').then(r => r.json()).then(d => { if (d.entries) setAudit(d.entries); }).catch(() => {}), []);
+
   useEffect(() => {
-    Promise.all([fetchSites(), fetchUsers(), fetchOrg()]).finally(() => setLoading(false));
-  }, [fetchSites, fetchUsers, fetchOrg]);
+    Promise.all([fetchSites(), fetchUsers(), fetchOrg(), fetchAudit()]).finally(() => setLoading(false));
+  }, [fetchSites, fetchUsers, fetchOrg, fetchAudit]);
 
   const saveOrg = async () => {
     if (!Number.isFinite(orgLaborRate) || orgLaborRate < 0) { alert('Labor rate must be a non-negative number.'); return; }
@@ -174,6 +179,28 @@ export default function AdminPage() {
           <thead><tr className="text-xs text-slate-500 border-b border-slate-800"><th className="text-left py-2">Username</th><th className="text-left py-2">Display Name</th><th className="text-left py-2">Role</th><th className="text-center py-2">Active</th><th className="text-left py-2">Last Login</th><th className="text-center py-2">Actions</th></tr></thead>
           <tbody>{users.map(u => <tr key={u.id} className="border-b border-slate-800/50"><td className="py-2 text-slate-300 font-mono text-xs">{u.username}</td><td className="py-2 text-slate-300">{u.display_name}</td><td className="py-2">{roleCol(u.role)}</td><td className="py-2 text-center"><span className={`inline-flex px-2 py-0.5 rounded-full text-xs ${u.active ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 'bg-slate-500/20 text-slate-400 border border-slate-500/30'}`}>{u.active ? 'Yes' : 'No'}</span></td><td className="py-2 text-slate-500 text-xs">{u.last_login_at || 'Never'}</td><td className="py-2 text-center"><button onClick={() => openUserEdit(u)} className="text-xs text-blue-400 hover:text-blue-300 mr-3">Edit</button><button onClick={() => deleteUserRow(u)} className="text-xs text-red-400 hover:text-red-300">Del</button></td></tr>)}</tbody>
         </table>
+      </div>
+      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold text-white">Recent Activity</h3>
+          <button onClick={fetchAudit} className="text-xs text-blue-400 hover:text-blue-300">Refresh</button>
+        </div>
+        <p className="text-xs text-slate-500 mb-4">Who changed what. Work-order transitions, SOP approvals, asset edits, user and settings changes.</p>
+        {audit.length > 0 ? (
+          <div className="max-h-80 overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-xs text-slate-500 border-b border-slate-800"><th className="text-left py-2">When</th><th className="text-left py-2">User</th><th className="text-left py-2">Action</th><th className="text-left py-2">Entity</th><th className="text-left py-2">Details</th></tr></thead>
+              <tbody>{audit.map(a => (
+                <tr key={a.id} className="border-b border-slate-800/50">
+                  <td className="py-2 text-slate-500 text-xs whitespace-nowrap">{a.timestamp}</td>
+                  <td className="py-2 text-slate-400 text-xs font-mono">{a.username}</td>
+                  <td className="py-2 text-slate-300 text-xs">{a.action}</td>
+                  <td className="py-2 text-slate-400 text-xs font-mono">{a.entityType}{a.entityId ? `:${a.entityId}` : ''}</td>
+                  <td className="py-2 text-slate-400 text-xs">{a.details}</td>
+                </tr>))}</tbody>
+            </table>
+          </div>
+        ) : <p className="text-slate-500 text-sm">No activity recorded yet.</p>}
       </div>
       {showUserForm && (
         <Modal open={showUserForm} onClose={() => setShowUserForm(false)} title={editingUser ? 'Edit User' : 'Add User'}>

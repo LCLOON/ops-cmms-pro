@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { getSiteConfig, getDashboardStats, getSites, upsertSite, updateSiteConfig } from '@/lib/operations';
+import { getSiteConfig, getDashboardStats, getSites, upsertSite, updateSiteConfig, logAudit } from '@/lib/operations';
 
 export async function GET(request: Request) {
   try {
@@ -38,10 +38,19 @@ export async function POST(request: Request) {
         ...(typeof raw.managerPhone === 'string' ? { managerPhone: raw.managerPhone } : {}),
         ...(raw.laborRate !== undefined ? { laborRate: num } : {}),
       });
+      await logAudit({
+        userId: session.userId, username: session.username,
+        action: 'config.update', entityType: 'site_config', entityId: '1',
+        details: raw.laborRate !== undefined ? `labor rate = ${updated.laborRate}` : 'organisation settings updated',
+      });
       return NextResponse.json({ success: true, config: updated });
     }
 
-    if (body.site) { await upsertSite(body.site); return NextResponse.json({ success: true }); }
+    if (body.site) {
+      await upsertSite(body.site);
+      await logAudit({ userId: session.userId, username: session.username, action: 'site.upsert', entityType: 'site', entityId: String(body.site.id || ''), details: String(body.site.name || '') });
+      return NextResponse.json({ success: true });
+    }
     return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
   } catch (err) {
     console.error('[api/config POST]', err);

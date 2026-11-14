@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { getProcedures, getProcedure, upsertProcedure, deleteProcedure, approveProcedure, retireProcedure, getProcedureRevisions } from '@/lib/operations';
+import { getProcedures, getProcedure, upsertProcedure, deleteProcedure, approveProcedure, retireProcedure, getProcedureRevisions, logAudit } from '@/lib/operations';
 import { procedureSchema } from '@/lib/validations';
 
 export async function GET(request: Request) {
@@ -77,6 +77,11 @@ export async function PUT(request: Request) {
     }
     const changeNote = typeof body === 'object' && body !== null && 'changeNote' in body && typeof body.changeNote === 'string' ? body.changeNote : '';
     await upsertProcedure(procedure, session.displayName, changeNote || `Edited to v${procedure.version}`);
+    await logAudit({
+      userId: session.userId, username: session.username,
+      action: 'procedure.update', entityType: 'procedure', entityId: body.id,
+      details: `${procedure.title} v${procedure.version} (${existing.status} -> ${procedure.status})`,
+    });
     return NextResponse.json(procedure);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -97,11 +102,13 @@ export async function PATCH(request: Request) {
     if (action === 'approve') {
       const result = await approveProcedure(id, session.displayName, changeNote || '');
       if (!result) return NextResponse.json({ error: 'Procedure not found' }, { status: 404 });
+      await logAudit({ userId: session.userId, username: session.username, action: 'procedure.approve', entityType: 'procedure', entityId: id, details: `${result.title} v${result.version} approved by ${session.displayName}` });
       return NextResponse.json(result);
     }
     if (action === 'retire') {
       const result = await retireProcedure(id, session.displayName);
       if (!result) return NextResponse.json({ error: 'Procedure not found' }, { status: 404 });
+      await logAudit({ userId: session.userId, username: session.username, action: 'procedure.retire', entityType: 'procedure', entityId: id, details: `${result.title} v${result.version} retired` });
       return NextResponse.json(result);
     }
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
@@ -119,6 +126,7 @@ export async function DELETE(request: Request) {
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
     await deleteProcedure(id);
+    await logAudit({ userId: session.userId, username: session.username, action: 'procedure.delete', entityType: 'procedure', entityId: id, details: '' });
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { getAssets, upsertAsset, deleteAsset, getAsset } from '@/lib/operations';
+import { getAssets, upsertAsset, deleteAsset, getAsset, logAudit } from '@/lib/operations';
 import { assetSchema } from '@/lib/validations';
 
 export async function GET() {
@@ -27,6 +27,11 @@ export async function POST(request: Request) {
     const id = typeof requestedId === 'string' && requestedId.trim() ? requestedId : 'AST-' + Date.now().toString(36).toUpperCase();
     const asset = { ...parsed.data, id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     await upsertAsset(asset);
+    await logAudit({
+      userId: session.userId, username: session.username,
+      action: requestedId ? 'asset.update' : 'asset.create',
+      entityType: 'asset', entityId: id, details: `${asset.name} (${asset.status})`,
+    });
     return NextResponse.json(asset);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -50,6 +55,11 @@ export async function PUT(request: Request) {
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });
     const updated = { ...existing, ...parsed.data, id: existing.id, updatedAt: new Date().toISOString() };
     await upsertAsset(updated);
+    await logAudit({
+      userId: session.userId, username: session.username,
+      action: 'asset.update', entityType: 'asset', entityId: updated.id,
+      details: `${existing.status} -> ${updated.status}`,
+    });
     return NextResponse.json(updated);
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -65,6 +75,7 @@ export async function DELETE(request: Request) {
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
     await deleteAsset(id);
+    await logAudit({ userId: session.userId, username: session.username, action: 'asset.delete', entityType: 'asset', entityId: id, details: '' });
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

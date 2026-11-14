@@ -832,6 +832,28 @@ export async function logAudit(entry: { userId?: number; username: string; actio
   await (await getDb()).execute({ sql: 'INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, details, changes) VALUES (?,?,?,?,?,?,?)', args: [entry.userId || null, entry.username, entry.action, entry.entityType, entry.entityId, entry.details, entry.changes || ''] });
 }
 
+export interface AuditEntry {
+  id: number; timestamp: string; username: string; action: string;
+  entityType: string; entityId: string; details: string; changes: string;
+}
+
+// Most recent audit entries, newest first. The table existed but only the import
+// paths ever wrote to it, so there was no trail for the workflows that matter.
+export async function getAuditLog(limit = 100): Promise<AuditEntry[]> {
+  const capped = Math.min(Math.max(Math.trunc(limit) || 100, 1), 500);
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM audit_log ORDER BY id DESC LIMIT ?', args: [capped] });
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
+    id: r.id as number,
+    timestamp: r.timestamp as string,
+    username: (r.username as string) || '',
+    action: (r.action as string) || '',
+    entityType: (r.entity_type as string) || '',
+    entityId: (r.entity_id as string) || '',
+    details: (r.details as string) || '',
+    changes: (r.changes as string) || '',
+  }));
+}
+
 // ─── Analytics ─────────────────────────────────────────────────
 export interface AnalyticsData {
   mttr: { assetId: string; assetName: string; mttrDays: number; workOrderCount: number }[];
