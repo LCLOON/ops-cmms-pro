@@ -116,19 +116,12 @@ async function initSchema(db: Client): Promise<void> {
   // "no such table: <name>". That failure is self-perpetuating — a database
   // missing `procedures` could never create it, because the ALTER for it ran
   // before its CREATE in the same batch. Skipping missing tables breaks the loop.
-  let alters = '';
   const alterGroups: Array<[string, Array<[string, string]>]> = [
     ['assets', assetCols],
     ['pm_schedules', pmCols],
     ['procedures', procedureCols],
     ['wo_checklist_items', checklistCols],
   ];
-  for (const [table, cols] of alterGroups) {
-    if (!(await tableExists(db, table))) continue;
-    for (const [col, ddl] of cols) {
-      if (!(await tableHasColumn(db, table, col))) alters += '    ' + ddl + ';\n';
-    }
-  }
 
   await db.executeMultiple(`
     CREATE TABLE IF NOT EXISTS users (
@@ -484,10 +477,22 @@ async function initSchema(db: Client): Promise<void> {
       completed_at TEXT NOT NULL DEFAULT ''
     );
 
-    -- Column migrations run LAST: every table above now exists, so this is safe
-    -- on both fresh and pre-existing databases.
-    ${alters}
   `);
+
+  // Column migrations run AFTER the CREATE TABLE batch. This ordering is the
+  // whole point: probing for tables/columns before the schema exists makes
+  // every check report "missing table" on a fresh database, so no ALTER is
+  // emitted and later data-layer inserts reference columns that were never
+  // added (e.g. assets.parent_id) — which aborts seeding entirely.
+  for (const [table, cols] of alterGroups) {
+    if (!(await tableExists(db, table))) continue;
+    for (const [, ddl] of cols) {
+      const col = ddl.replace(/^ALTER TABLE \w+ ADD COLUMN /, '').split(' ')[0];
+      if (!(await tableHasColumn(db, table, col))) {
+        await db.execute(ddl);
+      }
+    }
+  }
 
   await backfillProcedureGovernance(db);
 }

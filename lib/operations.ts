@@ -1136,12 +1136,16 @@ export async function createFollowUpWorkOrder(checklistItemId: number, username:
   const woId = 'WO-' + Date.now().toString(36).toUpperCase();
   const now = new Date().toISOString();
   const instruction = (item.instruction as string) || 'Checklist step';
+  // asset_id is a foreign key to assets(id). An empty string is NOT null, so it
+  // fails the FK check when the parent work order is asset-less — which made
+  // this endpoint 500 for every site-level work order. Persist NULL instead.
+  const parentAssetId = (parent?.asset_id as string) || null;
   await db.execute({
     sql: `INSERT INTO work_orders (id, asset_id, title, description, type, priority, status, assigned_to, requested_by, due_date, created_at, updated_at)
       VALUES (?,?,?,?,'corrective','high','open',?,?,?,?,?)`,
     args: [
       woId,
-      (parent?.asset_id as string) || '',
+      parentAssetId,
       `Follow-up: ${instruction}`.slice(0, 120),
       `Raised from failed checklist step on ${item.work_order_id as string}. Result: ${(item.result_value as string) || 'n/a'}${item.notes ? ` — ${item.notes as string}` : ''}`,
       (parent?.assigned_to as string) || '',
