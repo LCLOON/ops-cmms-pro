@@ -8,7 +8,7 @@
 export type NavPage =
   | 'dashboard' | 'assets' | 'criticality' | 'root-cause-analysis' | 'work-orders' | 'pm-schedule' | 'procedures'
   | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents'
-  | 'safety' | 'inspections' | 'reports' | 'testing' | 'advisor' | 'help' | 'admin';
+  | 'safety' | 'inspections' | 'reports' | 'testing' | 'oil-analysis' | 'advisor' | 'help' | 'admin';
 
 export interface NavParams {
   /** Open/highlight this specific record. */
@@ -23,6 +23,7 @@ export interface NavParams {
     siteId?: string;
     sourceTestingRecordId?: string;
     sourceInspectionId?: string;
+    sourceOilAnalysisId?: string;
   };
   /** Open or create an RCA associated with this work order. */
   workOrderId?: string;

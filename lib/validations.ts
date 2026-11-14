@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { oilAnalysisMetrics } from './oil-analysis-catalog';
 
 export const loginSchema = z.object({
   username: z.string().min(1, 'Username required').max(50),
@@ -39,6 +40,7 @@ export const workOrderSchema = z.object({
   pmScheduleId: z.string().default(''),
   sourceTestingRecordId: z.string().default(''),
   sourceInspectionId: z.string().default(''),
+  sourceOilAnalysisId: z.string().default(''),
   title: z.string().min(1, 'Title required'),
   description: z.string().default(''),
   type: z.enum(['corrective','preventive','predictive','emergency','inspection']).default('corrective'),
@@ -86,6 +88,59 @@ export const equipmentTestSchema = z.object({
   testedBy: z.string().default(''),
   status: z.enum(['pending', 'passed', 'failed', 'attention']).default('pending'),
   notes: z.string().default(''),
+});
+
+export const safetyPermitSchema = z.object({
+  workOrderId: z.string().default(''),
+  assetId: z.string().default(''),
+  permitType: z.enum(['loto','confined_space','hot_work','excavation','diving','crane','working_at_heights','other']).default('other'),
+  permitNumber: z.string().max(100).default(''),
+  issuedBy: z.string().max(100).default(''),
+  issuedDate: z.string().default(''),
+  expiryDate: z.string().default(''),
+  status: z.enum(['draft','issued','active','closed','expired','cancelled']).default('draft'),
+  description: z.string().max(2000).default(''),
+  hazards: z.string().max(5000).default(''),
+  precautions: z.string().max(5000).default(''),
+  approvedBy: z.string().max(100).default(''),
+  attachments: z.string().max(5000).default(''),
+});
+
+export const oilAnalysisSchema = z.object({
+  assetId: z.string().min(1, 'Asset required'),
+  sampleType: z.enum(['bearing', 'transformer']),
+  sampleDate: z.string().min(1, 'Sample date required'),
+  samplePoint: z.string().max(200).default(''),
+  sampleId: z.string().max(100).default(''),
+  sampledBy: z.string().max(100).default(''),
+  labName: z.string().max(200).default(''),
+  reportNumber: z.string().max(100).default(''),
+  oilBrand: z.string().max(100).default(''),
+  oilGrade: z.string().max(100).default(''),
+  hoursOnOil: z.string().default(''),
+  assessment: z.enum(['not_entered', 'satisfactory', 'monitor', 'action_required']).default('not_entered'),
+  assessmentNotes: z.string().max(5000).default(''),
+  recommendations: z.string().max(5000).default(''),
+  nextSampleDue: z.string().default(''),
+  notes: z.string().max(5000).default(''),
+  measurements: z.record(z.string(), z.string()).default({}),
+}).superRefine((record, context) => {
+  if (record.hoursOnOil.trim() && (!Number.isFinite(Number(record.hoursOnOil)) || Number(record.hoursOnOil) < 0)) {
+    context.addIssue({ code: 'custom', path: ['hoursOnOil'], message: 'Hours on oil must be a non-negative number' });
+  }
+  const allowedMetrics = oilAnalysisMetrics[record.sampleType];
+  for (const [key, value] of Object.entries(record.measurements)) {
+    const metric = allowedMetrics.find(candidate => candidate.key === key);
+    if (!metric) {
+      context.addIssue({ code: 'custom', path: ['measurements', key], message: 'Metric does not match the sample type' });
+    } else if (metric.input === 'number' && value.trim()) {
+      if (!Number.isFinite(Number(value))) {
+        context.addIssue({ code: 'custom', path: ['measurements', key], message: `${metric.label} must be a number` });
+      } else if (Number(value) < 0) {
+        context.addIssue({ code: 'custom', path: ['measurements', key], message: `${metric.label} cannot be negative` });
+      }
+    }
+  }
 });
 
 export const inspectionSchema = z.object({

@@ -10,7 +10,7 @@ import { bandToAssetCriticality, type RiskBand } from '@/lib/criticality';
 
 interface WorkOrder {
   id: string; assetId: string; title: string; description: string;
-  siteId: string; pmScheduleId: string; sourceTestingRecordId: string; sourceInspectionId: string;
+  siteId: string; pmScheduleId: string; sourceTestingRecordId: string; sourceInspectionId: string; sourceOilAnalysisId: string;
   type: string; priority: string; status: string; assignedTo: string;
   requestedBy: string; dueDate: string; completedDate: string;
   laborHours: number; partsCost: number; resolution: string;
@@ -22,7 +22,7 @@ interface InventoryItem { id: string; name: string; partNumber: string; unitCost
 interface SiteOption { id: string; name: string; }
 
 const defaultWO: WorkOrder = {
-  id: '', assetId: '', siteId: '', pmScheduleId: '', sourceTestingRecordId: '', sourceInspectionId: '',
+  id: '', assetId: '', siteId: '', pmScheduleId: '', sourceTestingRecordId: '', sourceInspectionId: '', sourceOilAnalysisId: '',
   title: '', description: '', type: 'corrective',
   priority: 'medium', status: 'open', assignedTo: '', requestedBy: '',
   dueDate: '', completedDate: '', laborHours: 0, partsCost: 0, resolution: '',
@@ -59,6 +59,7 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
     siteId: params.workOrderDraft.siteId ?? '',
     sourceTestingRecordId: params.workOrderDraft.sourceTestingRecordId ?? '',
     sourceInspectionId: params.workOrderDraft.sourceInspectionId ?? '',
+    sourceOilAnalysisId: params.workOrderDraft.sourceOilAnalysisId ?? '',
     title: params.workOrderDraft.title,
     description: params.workOrderDraft.description,
     type: params.workOrderDraft.type ?? 'corrective',
@@ -305,6 +306,20 @@ function WOForm({ form, setForm, onSave, saving, isEdit, assets, sites, riskBand
               className="text-amber-300 hover:text-amber-200 text-sm underline">
               Start or update Root Cause Analysis
             </button>
+          )}
+          {isEdit && (
+            <div className="flex flex-wrap gap-4">
+              <button type="button" onClick={() => navigate('safety', { workOrderId: form.id, assetId: form.assetId })}
+                className="text-blue-300 hover:text-blue-200 text-sm underline">
+                Manage Safety Permits
+              </button>
+              {form.sourceOilAnalysisId && (
+                <button type="button" onClick={() => navigate('oil-analysis', { focusId: form.sourceOilAnalysisId, assetId: form.assetId })}
+                  className="text-blue-300 hover:text-blue-200 text-sm underline">
+                  Open linked oil sample
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}

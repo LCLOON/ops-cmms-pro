@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Trash2, ClipboardList, CalendarCheck, ChevronRight, Activity, GitBranch } from 'lucide-react';
+import { Plus, Trash2, ClipboardList, CalendarCheck, ChevronRight, Activity, GitBranch, ClipboardCheck, Droplets } from 'lucide-react';
 import { navigate } from '@/lib/nav';
+import AssetQrTag from './AssetQrTag';
 import {
   AssetRecord, indexById, buildPath, statusColors, criticalityColors, warrantyDaysLeft,
 } from './asset-types';
@@ -144,10 +145,19 @@ export default function AssetDetailPanel({
               className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
               <Activity className="w-3.5 h-3.5" /> Testing
             </button>
+            <button onClick={() => navigate('inspections', { assetId: asset.id })}
+              className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
+              <ClipboardCheck className="w-3.5 h-3.5" /> Inspections
+            </button>
+            <button onClick={() => navigate('oil-analysis', { assetId: asset.id })}
+              className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
+              <Droplets className="w-3.5 h-3.5" /> Oil Analysis
+            </button>
             <button onClick={() => navigate('root-cause-analysis', { assetId: asset.id })}
               className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
               <GitBranch className="w-3.5 h-3.5" /> RCA
             </button>
+            <AssetQrTag asset={asset} />
             {isAdmin && (
               <button onClick={() => onDelete(asset)}
                 className="flex items-center gap-1 text-red-400 hover:text-red-300 border border-red-500/30 hover:bg-red-500/10 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">

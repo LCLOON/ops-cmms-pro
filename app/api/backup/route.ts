@@ -6,7 +6,7 @@ const backupTables = [
   'users', 'site_config', 'assets', 'work_orders', 'pm_schedules', 'inventory',
   'vendors', 'purchase_orders', 'po_items', 'wo_parts', 'wo_labor', 'meter_readings',
   'audit_log', 'sites', 'compliance_obligations', 'inspections', 'documents',
-  'safety_permits', 'testing_records', 'root_cause_analyses', 'procedures',
+  'safety_permits', 'testing_records', 'oil_analysis_records', 'root_cause_analyses', 'procedures',
   'procedure_steps', 'procedure_revisions', 'wo_checklist_items', 'asset_downtime',
   'asset_criticality',
 ] as const;

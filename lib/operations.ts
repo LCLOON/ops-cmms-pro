@@ -4,7 +4,7 @@ import bcryptjs from 'bcryptjs';
 import { generateHydroAssets, generateHydroInventory } from './hydro-seed';
 import { EXCEL_VENDORS } from './excel-vendors';
 import { computeCriticality, bandToAssetCriticality, type CriticalityInput, type CriticalityResult } from './criticality';
-import type { Asset, WorkOrder, PmSchedule, InventoryItem, SiteConfig, DbUser, WoPart, WoLabor, Vendor, PurchaseOrder, PoItem, MeterReading, Site, ComplianceObligation, Inspection, Document, SafetyPermit, EquipmentTest, RootCauseAnalysis, Procedure, ProcedureStep, ProcedureRevision, WoChecklistItem, ProcedureResponseType } from './types';
+import type { Asset, WorkOrder, PmSchedule, InventoryItem, SiteConfig, DbUser, WoPart, WoLabor, Vendor, PurchaseOrder, PoItem, MeterReading, Site, ComplianceObligation, Inspection, Document, SafetyPermit, EquipmentTest, OilAnalysisRecord, RootCauseAnalysis, Procedure, ProcedureStep, ProcedureRevision, WoChecklistItem, ProcedureResponseType } from './types';
 
 // ─── Helpers ───────────────────────────────────────────────────
 function nowIso(): string { return new Date().toISOString(); }
@@ -383,6 +383,7 @@ function rowToWorkOrder(r: Record<string, unknown>): WorkOrder {
     siteId: (r.site_id ?? '') as string, pmScheduleId: (r.pm_schedule_id ?? '') as string,
     sourceTestingRecordId: (r.source_testing_record_id ?? '') as string,
     sourceInspectionId: (r.source_inspection_id ?? '') as string,
+    sourceOilAnalysisId: (r.source_oil_analysis_id ?? '') as string,
     description: r.description as string, type: r.type as WorkOrder['type'],
     priority: r.priority as WorkOrder['priority'], status: r.status as WorkOrder['status'],
     assignedTo: r.assigned_to as string, requestedBy: r.requested_by as string,
@@ -418,12 +419,12 @@ export async function upsertWorkOrder(wo: WorkOrder): Promise<void> {
   const assetSiteId = (assetRs.rows[0] as unknown as { site_id: string | null } | undefined)?.site_id;
   const siteId = assetSiteId || wo.siteId || null;
 
-  await db.execute({ sql: `INSERT INTO work_orders (id,asset_id,site_id,pm_schedule_id,source_testing_record_id,source_inspection_id,title,description,type,priority,status,assigned_to,requested_by,due_date,completed_date,labor_hours,parts_cost,resolution,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,site_id=excluded.site_id,pm_schedule_id=excluded.pm_schedule_id,source_testing_record_id=excluded.source_testing_record_id,source_inspection_id=excluded.source_inspection_id,title=excluded.title,description=excluded.description,type=excluded.type,priority=excluded.priority,status=excluded.status,assigned_to=excluded.assigned_to,requested_by=excluded.requested_by,due_date=excluded.due_date,completed_date=excluded.completed_date,resolution=excluded.resolution,updated_at=excluded.updated_at`,
+  await db.execute({ sql: `INSERT INTO work_orders (id,asset_id,site_id,pm_schedule_id,source_testing_record_id,source_inspection_id,source_oil_analysis_id,title,description,type,priority,status,assigned_to,requested_by,due_date,completed_date,labor_hours,parts_cost,resolution,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,site_id=excluded.site_id,pm_schedule_id=excluded.pm_schedule_id,source_testing_record_id=excluded.source_testing_record_id,source_inspection_id=excluded.source_inspection_id,source_oil_analysis_id=excluded.source_oil_analysis_id,title=excluded.title,description=excluded.description,type=excluded.type,priority=excluded.priority,status=excluded.status,assigned_to=excluded.assigned_to,requested_by=excluded.requested_by,due_date=excluded.due_date,completed_date=excluded.completed_date,resolution=excluded.resolution,updated_at=excluded.updated_at`,
     args: [
       wo.id, wo.assetId || null, siteId, wo.pmScheduleId || null, wo.sourceTestingRecordId || null,
-      wo.sourceInspectionId || null, wo.title, wo.description, wo.type, wo.priority, wo.status,
+      wo.sourceInspectionId || null, wo.sourceOilAnalysisId || null, wo.title, wo.description, wo.type, wo.priority, wo.status,
       wo.assignedTo, wo.requestedBy, wo.dueDate, wo.completedDate, wo.laborHours, wo.partsCost, wo.resolution,
     ] });
   if (wo.status === 'completed' && prior?.status !== 'completed') await syncPmScheduleOnCompletion(wo.id);
@@ -1631,8 +1632,59 @@ export async function getSafetyPermits(): Promise<SafetyPermit[]> {
 export async function upsertSafetyPermit(s: SafetyPermit): Promise<void> {
   await (await getDb()).execute({ sql: `INSERT INTO safety_permits (id,work_order_id,asset_id,permit_type,permit_number,issued_by,issued_date,expiry_date,status,description,hazards,precautions,approved_by,attachments,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET permit_type=excluded.permit_type,status=excluded.status,issued_by=excluded.issued_by,expiry_date=excluded.expiry_date,description=excluded.description,hazards=excluded.hazards,precautions=excluded.precautions,approved_by=excluded.approved_by,attachments=excluded.attachments,updated_at=excluded.updated_at`,
+    ON CONFLICT(id) DO UPDATE SET work_order_id=excluded.work_order_id,asset_id=excluded.asset_id,permit_type=excluded.permit_type,permit_number=excluded.permit_number,issued_by=excluded.issued_by,issued_date=excluded.issued_date,expiry_date=excluded.expiry_date,status=excluded.status,description=excluded.description,hazards=excluded.hazards,precautions=excluded.precautions,approved_by=excluded.approved_by,attachments=excluded.attachments,updated_at=excluded.updated_at`,
     args: [str(s.id), str(s.workOrderId) || null, str(s.assetId) || null, str(s.permitType) || 'other', str(s.permitNumber), str(s.issuedBy), str(s.issuedDate), str(s.expiryDate), str(s.status) || 'draft', str(s.description), str(s.hazards), str(s.precautions), str(s.approvedBy), str(s.attachments)] });
+}
+
+// ─── Oil Analysis ──────────────────────────────────────────────
+export async function getOilAnalysisRecords(): Promise<OilAnalysisRecord[]> {
+  const rs = await (await getDb()).execute(`
+    SELECT o.*,
+      (SELECT wo.id FROM work_orders wo WHERE wo.source_oil_analysis_id = o.id ORDER BY wo.created_at DESC LIMIT 1) AS follow_up_work_order_id
+    FROM oil_analysis_records o
+    ORDER BY o.sample_date DESC
+  `);
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
+    id: r.id as string,
+    assetId: r.asset_id as string,
+    sampleType: r.sample_type as OilAnalysisRecord['sampleType'],
+    sampleDate: r.sample_date as string,
+    samplePoint: r.sample_point as string,
+    sampleId: r.sample_id as string,
+    sampledBy: r.sampled_by as string,
+    labName: r.lab_name as string,
+    reportNumber: r.report_number as string,
+    oilBrand: r.oil_brand as string,
+    oilGrade: r.oil_grade as string,
+    hoursOnOil: r.hours_on_oil as string,
+    assessment: r.assessment as OilAnalysisRecord['assessment'],
+    assessmentNotes: r.assessment_notes as string,
+    recommendations: r.recommendations as string,
+    nextSampleDue: r.next_sample_due as string,
+    notes: r.notes as string,
+    measurements: JSON.parse(r.measurements_json as string) as Record<string, string>,
+    followUpWorkOrderId: (r.follow_up_work_order_id ?? '') as string,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  }));
+}
+
+export async function upsertOilAnalysisRecord(record: OilAnalysisRecord): Promise<void> {
+  await (await getDb()).execute({
+    sql: `INSERT INTO oil_analysis_records (id,asset_id,sample_type,sample_date,sample_point,sample_id,sampled_by,lab_name,report_number,oil_brand,oil_grade,hours_on_oil,assessment,assessment_notes,recommendations,next_sample_due,notes,measurements_json,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,sample_type=excluded.sample_type,sample_date=excluded.sample_date,sample_point=excluded.sample_point,sample_id=excluded.sample_id,sampled_by=excluded.sampled_by,lab_name=excluded.lab_name,report_number=excluded.report_number,oil_brand=excluded.oil_brand,oil_grade=excluded.oil_grade,hours_on_oil=excluded.hours_on_oil,assessment=excluded.assessment,assessment_notes=excluded.assessment_notes,recommendations=excluded.recommendations,next_sample_due=excluded.next_sample_due,notes=excluded.notes,measurements_json=excluded.measurements_json,updated_at=excluded.updated_at`,
+    args: [
+      record.id, record.assetId, record.sampleType, record.sampleDate, record.samplePoint,
+      record.sampleId, record.sampledBy, record.labName, record.reportNumber, record.oilBrand,
+      record.oilGrade, record.hoursOnOil, record.assessment, record.assessmentNotes,
+      record.recommendations, record.nextSampleDue, record.notes, JSON.stringify(record.measurements),
+    ],
+  });
+}
+
+export async function deleteOilAnalysisRecord(id: string): Promise<void> {
+  await (await getDb()).execute({ sql: 'DELETE FROM oil_analysis_records WHERE id = ?', args: [id] });
 }
 
 // ─── Equipment Testing ─────────────────────────────────────────

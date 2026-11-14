@@ -104,6 +104,7 @@ async function initSchema(db: Client): Promise<void> {
     ['pm_schedule_id', 'ALTER TABLE work_orders ADD COLUMN pm_schedule_id TEXT REFERENCES pm_schedules(id) ON DELETE SET NULL'],
     ['source_testing_record_id', 'ALTER TABLE work_orders ADD COLUMN source_testing_record_id TEXT REFERENCES testing_records(id) ON DELETE SET NULL'],
     ['source_inspection_id', 'ALTER TABLE work_orders ADD COLUMN source_inspection_id TEXT REFERENCES inspections(id) ON DELETE SET NULL'],
+    ['source_oil_analysis_id', 'ALTER TABLE work_orders ADD COLUMN source_oil_analysis_id TEXT REFERENCES oil_analysis_records(id) ON DELETE SET NULL'],
   ];
   const inspectionCols: Array<[string, string]> = [
     ['site_id', 'ALTER TABLE inspections ADD COLUMN site_id TEXT REFERENCES sites(id) ON DELETE SET NULL'],
@@ -191,6 +192,7 @@ async function initSchema(db: Client): Promise<void> {
       pm_schedule_id TEXT REFERENCES pm_schedules(id) ON DELETE SET NULL,
       source_testing_record_id TEXT REFERENCES testing_records(id) ON DELETE SET NULL,
       source_inspection_id TEXT REFERENCES inspections(id) ON DELETE SET NULL,
+      source_oil_analysis_id TEXT REFERENCES oil_analysis_records(id) ON DELETE SET NULL,
       title TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       type TEXT NOT NULL DEFAULT 'corrective' CHECK(type IN ('corrective','preventive','predictive','emergency','inspection')),
@@ -433,6 +435,30 @@ async function initSchema(db: Client): Promise<void> {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS oil_analysis_records (
+      id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      sample_type TEXT NOT NULL CHECK(sample_type IN ('bearing','transformer')),
+      sample_date TEXT NOT NULL DEFAULT (date('now')),
+      sample_point TEXT NOT NULL DEFAULT '',
+      sample_id TEXT NOT NULL DEFAULT '',
+      sampled_by TEXT NOT NULL DEFAULT '',
+      lab_name TEXT NOT NULL DEFAULT '',
+      report_number TEXT NOT NULL DEFAULT '',
+      oil_brand TEXT NOT NULL DEFAULT '',
+      oil_grade TEXT NOT NULL DEFAULT '',
+      hours_on_oil TEXT NOT NULL DEFAULT '',
+      assessment TEXT NOT NULL DEFAULT 'not_entered' CHECK(assessment IN ('not_entered','satisfactory','monitor','action_required')),
+      assessment_notes TEXT NOT NULL DEFAULT '',
+      recommendations TEXT NOT NULL DEFAULT '',
+      next_sample_due TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      measurements_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_oil_analysis_asset_date ON oil_analysis_records(asset_id, sample_date DESC);
 
     CREATE TABLE IF NOT EXISTS root_cause_analyses (
       id TEXT PRIMARY KEY,

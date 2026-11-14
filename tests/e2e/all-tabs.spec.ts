@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 const tabs = [
   'Dashboard', 'Assets', 'Criticality', 'Root Cause Analysis', 'Work Orders', 'PM Schedule', 'Procedures',
   'Inventory', 'Vendors', 'Purchase Orders', 'Compliance', 'Documents',
-  'Safety', 'Inspections', 'Reports', 'Testing', 'AI Advisor', 'Help', 'Admin',
+  'Safety', 'Inspections', 'Reports', 'Testing', 'Oil Analysis', 'AI Advisor', 'Help', 'Admin',
 ];
 
 async function exerciseVisibleInputs(page: Page) {
@@ -177,6 +177,227 @@ test('failed mechanical test carries its evidence into a corrective work order',
   expect(submittedWorkOrder?.siteId).toBe('SITE-TEST');
 });
 
+test('work-order safety permits inherit the asset and keep editable links', async ({ page }) => {
+  const asset = { id: 'SAFETY-ASSET', name: 'Safety Test Pump', siteId: 'SITE-SAFETY' };
+  const workOrder = {
+    id: 'WO-SAFETY-1', assetId: asset.id, siteId: asset.siteId, title: 'Pump seal repair',
+    description: '', pmScheduleId: '', sourceTestingRecordId: '', sourceInspectionId: '',
+    sourceOilAnalysisId: '', type: 'corrective', priority: 'high', status: 'open',
+    assignedTo: '', requestedBy: '', dueDate: '', completedDate: '', laborHours: 0,
+    partsCost: 0, resolution: '', createdAt: '', updatedAt: '',
+  };
+  let submittedPermit: Record<string, unknown> | undefined;
+  await page.route('**/api/assets', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify([asset]),
+  }));
+  await page.route('**/api/config*', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ sites: [{ id: asset.siteId, name: 'Safety Site' }] }),
+  }));
+  await page.route('**/api/criticality', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ rows: [] }),
+  }));
+  await page.route('**/api/work-orders', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify([workOrder]),
+  }));
+  await page.route('**/api/safety', async route => {
+    if (route.request().method() === 'POST') {
+      submittedPermit = route.request().postDataJSON();
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(submittedPermit) });
+    } else {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify([]) });
+    }
+  });
+
+  await openApp(page);
+  await page.getByRole('navigation').getByRole('button', { name: 'Work Orders', exact: true }).click();
+  await page.locator('[data-row-id="WO-SAFETY-1"]').locator('td').last().getByRole('button').first().click();
+  const workOrderModal = page.locator('div.fixed.inset-0.z-50');
+  await workOrderModal.getByRole('button', { name: 'Manage Safety Permits' }).click();
+
+  await expect(page.getByText(/Permits for WO-SAFETY-1/)).toBeVisible();
+  await page.getByRole('button', { name: 'Add New' }).click();
+  const permitModal = page.locator('div.fixed.inset-0.z-50');
+  await expect(permitModal.getByLabel('Work order')).toHaveValue('WO-SAFETY-1');
+  await expect(permitModal.getByLabel('Asset')).toHaveValue(asset.id);
+  await expect(permitModal.getByLabel('Asset')).toBeDisabled();
+  await permitModal.getByLabel('Permit #').fill('PERMIT-SAFETY-1');
+  await permitModal.getByRole('button', { name: 'Save' }).click();
+  await expect.poll(() => submittedPermit).toBeDefined();
+  expect(submittedPermit?.workOrderId).toBe(workOrder.id);
+  expect(submittedPermit?.assetId).toBe(asset.id);
+});
+
+test('oil analysis can raise a corrective work order with lab evidence linked', async ({ page }) => {
+  let submittedWorkOrder: Record<string, unknown> | undefined;
+  const asset = { id: 'OIL-ASSET', name: 'Generator Bearing', siteId: 'SITE-OIL' };
+  await page.route('**/api/assets', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify([asset]),
+  }));
+  await page.route('**/api/oil-analysis', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      id: 'OIL-ACTION-1', assetId: asset.id, sampleType: 'bearing', sampleDate: '2026-11-13',
+      samplePoint: 'Drive-end bearing', sampleId: 'LAB-001', sampledBy: 'Technician',
+      labName: 'Independent Lab', reportNumber: 'RPT-001', oilBrand: 'ISO VG', oilGrade: '68',
+      hoursOnOil: '1400', assessment: 'action_required', assessmentNotes: 'Wear metals elevated',
+      recommendations: 'Inspect bearing and verify lubrication', nextSampleDue: '',
+      notes: 'Trend against prior sample', measurements: { ironPpm: '42', waterPpm: '110' },
+      followUpWorkOrderId: '', createdAt: '', updatedAt: '',
+    }]),
+  }));
+  await page.route('**/api/work-orders', async route => {
+    if (route.request().method() === 'POST') {
+      submittedWorkOrder = route.request().postDataJSON();
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ id: 'WO-OIL-1' }) });
+    } else {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify([]) });
+    }
+  });
+  await page.route('**/api/config*', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ sites: [{ id: asset.siteId, name: 'Oil Site' }] }),
+  }));
+  await page.route('**/api/criticality', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ rows: [] }),
+  }));
+
+  await openApp(page);
+  await page.getByRole('navigation').getByRole('button', { name: 'Oil Analysis', exact: true }).click();
+  await page.getByRole('button', { name: 'Raise corrective WO' }).click();
+  const workOrderModal = page.locator('div.fixed.inset-0.z-50');
+  await expect(workOrderModal.getByLabel('Asset')).toHaveValue(asset.id);
+  await expect(workOrderModal.getByLabel('Title')).toHaveValue(/Review bearing oil analysis/);
+  await expect(workOrderModal.locator('textarea').first()).toHaveValue(/Iron \(Fe\): 42 ppm/);
+  await expect(workOrderModal.locator('textarea').first()).toHaveValue(/Inspect bearing and verify lubrication/);
+  await workOrderModal.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => submittedWorkOrder).toBeDefined();
+  expect(submittedWorkOrder?.sourceOilAnalysisId).toBe('OIL-ACTION-1');
+  expect(submittedWorkOrder?.siteId).toBe(asset.siteId);
+});
+
+test('asset QR tags deep-link to field actions for inspections and oil analysis', async ({ page }) => {
+  const asset = {
+    id: 'QR-FIELD-ASSET', name: 'QR Field Pump', siteId: 'SITE-QR', category: 'mechanical',
+    location: 'North building', department: 'Maintenance', manufacturer: '', model: '',
+    serialNumber: '', installDate: '', warrantyExpiry: '', status: 'operational',
+    criticality: 'medium', notes: '', parentId: '',
+  };
+  await page.route('**/api/assets', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify([asset]),
+  }));
+  await page.route('**/api/work-orders', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify([]),
+  }));
+  await page.route('**/api/config*', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ sites: [{ id: asset.siteId, name: 'QR Site' }] }),
+  }));
+  await page.route('**/api/oil-analysis', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify([]),
+  }));
+  await page.route('**/api/inspections', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify([]),
+  }));
+  await page.route('**/api/compliance', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify([]),
+  }));
+
+  await page.goto(`/app?assetId=${asset.id}`);
+  await expect(page.getByRole('navigation').getByRole('button', { name: 'Dashboard', exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('heading', { name: asset.name })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'QR tag', exact: true }).click();
+  const qr = page.getByRole('img', { name: `QR code for ${asset.name}` });
+  await expect(qr).toBeVisible();
+  await expect(qr).toHaveAttribute('src', /^data:image\/png;base64,/);
+
+  await page.locator('main').getByRole('button', { name: 'Oil Analysis', exact: true }).click();
+  await expect(page.locator('main h2', { hasText: 'Oil Analysis' })).toBeVisible();
+  await expect(page.getByLabel('Trend asset')).toHaveValue(asset.id);
+
+  await page.evaluate(id => window.dispatchEvent(new CustomEvent('nav', { detail: { page: 'assets', focusId: id } })), asset.id);
+  await expect(page.getByRole('heading', { name: asset.name })).toBeVisible();
+  await page.locator('main').getByRole('button', { name: 'Inspections', exact: true }).click();
+  await page.getByRole('button', { name: 'Add New' }).click();
+  const inspectionModal = page.locator('div.fixed.inset-0.z-50');
+  await expect(inspectionModal.locator('select').nth(2)).toHaveValue(asset.id);
+});
+
+test('Safety permit links and oil analysis source links persist through the API', async ({ page }) => {
+  const assetsResponse = await page.request.get('/api/assets');
+  expect(assetsResponse.ok()).toBeTruthy();
+  const assets: { id: string }[] = await assetsResponse.json();
+  const asset = assets[0];
+  expect(asset, 'a seeded asset is required for relationship checks').toBeDefined();
+  if (!asset) return;
+
+  const suffix = Date.now().toString(36).toUpperCase();
+  const safetyWorkOrderId = `WO-E2E-SAFETY-${suffix}`;
+  const oilWorkOrderId = `WO-E2E-OIL-${suffix}`;
+  const permitId = `SP-E2E-${suffix}`;
+  const oilId = `OIL-E2E-${suffix}`;
+
+  try {
+    const safetyWorkOrderResponse = await page.request.post('/api/work-orders', {
+      data: { id: safetyWorkOrderId, assetId: asset.id, title: 'E2E permit relationship', type: 'corrective' },
+    });
+    expect(safetyWorkOrderResponse.ok()).toBeTruthy();
+
+    const mismatchResponse = await page.request.post('/api/safety', {
+      data: { id: permitId, workOrderId: safetyWorkOrderId, assetId: 'WRONG-ASSET', permitType: 'loto', permitNumber: 'MISMATCH' },
+    });
+    expect(mismatchResponse.status()).toBe(400);
+
+    const permitResponse = await page.request.post('/api/safety', {
+      data: { id: permitId, workOrderId: safetyWorkOrderId, assetId: '', permitType: 'loto', permitNumber: 'PERMIT-E2E' },
+    });
+    expect(permitResponse.ok()).toBeTruthy();
+    expect((await permitResponse.json()).assetId).toBe(asset.id);
+
+    const permitUpdate = await page.request.post('/api/safety', {
+      data: { id: permitId, workOrderId: '', assetId: '', permitType: 'hot_work', permitNumber: 'PERMIT-E2E-UPDATED' },
+    });
+    expect(permitUpdate.ok()).toBeTruthy();
+    const permits: { id: string; workOrderId: string; assetId: string; permitNumber: string }[] = await (await page.request.get('/api/safety')).json();
+    const savedPermit = permits.find(item => item.id === permitId);
+    expect(savedPermit).toMatchObject({ workOrderId: '', assetId: '', permitNumber: 'PERMIT-E2E-UPDATED' });
+
+    const invalidOilResponse = await page.request.post('/api/oil-analysis', {
+      data: {
+        id: oilId, assetId: asset.id, sampleType: 'transformer', sampleDate: '2026-11-13',
+        measurements: { viscosity40: '46' },
+      },
+    });
+    expect(invalidOilResponse.status()).toBe(400);
+
+    const oilResponse = await page.request.post('/api/oil-analysis', {
+      data: {
+        id: oilId, assetId: asset.id, sampleType: 'transformer', sampleDate: '2026-11-13',
+        samplePoint: 'Main tank', sampleId: 'LAB-E2E-1', labName: 'E2E lab',
+        assessment: 'action_required', assessmentNotes: 'Lab flagged this sample',
+        measurements: { hydrogenPpm: '12', acetylenePpm: '0' },
+      },
+    });
+    expect(oilResponse.ok()).toBeTruthy();
+
+    const oilWorkOrderResponse = await page.request.post('/api/work-orders', {
+      data: {
+        id: oilWorkOrderId, assetId: asset.id, title: 'E2E oil follow-up',
+        type: 'corrective', sourceOilAnalysisId: oilId,
+      },
+    });
+    expect(oilWorkOrderResponse.ok()).toBeTruthy();
+
+    const oilRecords: { id: string; followUpWorkOrderId?: string; measurements: Record<string, string> }[] = await (await page.request.get('/api/oil-analysis')).json();
+    expect(oilRecords.find(item => item.id === oilId)).toMatchObject({
+      followUpWorkOrderId: oilWorkOrderId,
+      measurements: { hydrogenPpm: '12', acetylenePpm: '0' },
+    });
+  } finally {
+    await page.request.delete('/api/safety', { data: { id: permitId } });
+    await page.request.delete('/api/work-orders', { data: { id: oilWorkOrderId } });
+    await page.request.delete('/api/work-orders', { data: { id: safetyWorkOrderId } });
+    await page.request.delete('/api/oil-analysis', { data: { id: oilId } });
+  }
+});
+
 test('deficient inspection hands off its site and evidence to a corrective work order', async ({ page }) => {
   let submittedWorkOrder: Record<string, unknown> | undefined;
   await page.route('**/api/assets', route => route.fulfill({
@@ -315,7 +536,7 @@ test('admin backup contains the complete application table manifest', async ({ p
     'users', 'site_config', 'assets', 'work_orders', 'pm_schedules', 'inventory',
     'vendors', 'purchase_orders', 'po_items', 'wo_parts', 'wo_labor', 'meter_readings',
     'audit_log', 'sites', 'compliance_obligations', 'inspections', 'documents',
-    'safety_permits', 'testing_records', 'root_cause_analyses', 'procedures',
+    'safety_permits', 'testing_records', 'oil_analysis_records', 'root_cause_analyses', 'procedures',
     'procedure_steps', 'procedure_revisions', 'wo_checklist_items', 'asset_downtime',
     'asset_criticality',
   ];

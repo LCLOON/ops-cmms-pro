@@ -30,6 +30,7 @@ export interface WorkOrder {
   pmScheduleId?: string;
   sourceTestingRecordId?: string;
   sourceInspectionId?: string;
+  sourceOilAnalysisId?: string;
   title: string;
   description: string;
   type: 'corrective' | 'preventive' | 'predictive' | 'emergency' | 'inspection';
@@ -276,6 +277,33 @@ export interface SafetyPermit {
   precautions: string;
   approvedBy: string;
   attachments: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type OilAnalysisSampleType = 'bearing' | 'transformer';
+export type OilAnalysisAssessment = 'not_entered' | 'satisfactory' | 'monitor' | 'action_required';
+
+export interface OilAnalysisRecord {
+  id: string;
+  assetId: string;
+  sampleType: OilAnalysisSampleType;
+  sampleDate: string;
+  samplePoint: string;
+  sampleId: string;
+  sampledBy: string;
+  labName: string;
+  reportNumber: string;
+  oilBrand: string;
+  oilGrade: string;
+  hoursOnOil: string;
+  assessment: OilAnalysisAssessment;
+  assessmentNotes: string;
+  recommendations: string;
+  nextSampleDue: string;
+  notes: string;
+  measurements: Record<string, string>;
+  followUpWorkOrderId?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import {
   getWorkOrders, getWorkOrder, getAsset, getSites, getPmSchedules, getTestingRecords,
-  getInspections, upsertWorkOrder, deleteWorkOrder, getCompletionBlockers, logAudit,
+  getInspections, getOilAnalysisRecords, upsertWorkOrder, deleteWorkOrder, getCompletionBlockers, logAudit,
 } from '@/lib/operations';
 import { workOrderSchema } from '@/lib/validations';
 
@@ -17,16 +17,17 @@ async function completionBlocker(id: string, nextStatus: string, currentStatus: 
 
 async function validateWorkOrderLinks(workOrder: {
   assetId: string; siteId: string; pmScheduleId: string;
-  sourceTestingRecordId: string; sourceInspectionId: string;
+  sourceTestingRecordId: string; sourceInspectionId: string; sourceOilAnalysisId: string;
 }): Promise<string | null> {
   const asset = workOrder.assetId ? await getAsset(workOrder.assetId) : null;
   if (workOrder.assetId && !asset) return 'Asset not found';
 
-  const [sites, pmSchedules, tests, inspections] = await Promise.all([
+  const [sites, pmSchedules, tests, inspections, oilAnalysisRecords] = await Promise.all([
     getSites(),
     getPmSchedules(),
     getTestingRecords(),
     getInspections(),
+    getOilAnalysisRecords(),
   ]);
   if (workOrder.siteId && !sites.some(site => site.id === workOrder.siteId)) return 'Site not found';
   if (asset?.siteId && workOrder.siteId && asset.siteId !== workOrder.siteId) {
@@ -46,6 +47,11 @@ async function validateWorkOrderLinks(workOrder: {
     const inspection = inspections.find(row => row.id === workOrder.sourceInspectionId);
     if (!inspection) return 'Inspection not found';
     if (asset && inspection.assetId && inspection.assetId !== asset.id) return 'Inspection belongs to a different asset';
+  }
+  if (workOrder.sourceOilAnalysisId) {
+    const record = oilAnalysisRecords.find(row => row.id === workOrder.sourceOilAnalysisId);
+    if (!record) return 'Oil analysis record not found';
+    if (asset && record.assetId !== asset.id) return 'Oil analysis record belongs to a different asset';
   }
   return null;
 }
@@ -82,6 +88,7 @@ export async function POST(request: Request) {
       pmScheduleId: parsed.data.pmScheduleId || priorRow?.pmScheduleId || '',
       sourceTestingRecordId: parsed.data.sourceTestingRecordId || priorRow?.sourceTestingRecordId || '',
       sourceInspectionId: parsed.data.sourceInspectionId || priorRow?.sourceInspectionId || '',
+      sourceOilAnalysisId: parsed.data.sourceOilAnalysisId || priorRow?.sourceOilAnalysisId || '',
       id,
       completedDate: priorRow?.completedDate ?? '',
       createdAt: priorRow?.createdAt ?? now,
@@ -128,6 +135,7 @@ export async function PUT(request: Request) {
       pmScheduleId: parsed.data.pmScheduleId || existing.pmScheduleId || '',
       sourceTestingRecordId: parsed.data.sourceTestingRecordId || existing.sourceTestingRecordId || '',
       sourceInspectionId: parsed.data.sourceInspectionId || existing.sourceInspectionId || '',
+      sourceOilAnalysisId: parsed.data.sourceOilAnalysisId || existing.sourceOilAnalysisId || '',
     };
     const linkError = await validateWorkOrderLinks(links);
     if (linkError) return NextResponse.json({ error: linkError }, { status: 400 });

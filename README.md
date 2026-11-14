@@ -75,7 +75,7 @@ Without `TURSO_DATABASE_URL` the app still deploys and runs on Vercel (demo mode
 
 ## Modules
 
-Dashboard & analytics (KPIs, MTTR/MTBF, cost trends) · Assets (table + hierarchy) · Work Orders (labor, parts, status workflow) · PM Schedules (auto work-order generation, deferrals) · Inventory · Vendors · Purchase Orders · Compliance · Inspections · Electrical tests · Safety · Documents · Meter readings · Admin (sites, users, roles)
+Dashboard & analytics (KPIs, MTTR/MTBF, cost trends) · Assets (table, hierarchy, printable QR tags) · Work Orders (labor, parts, status workflow, linked Safety Permits) · PM Schedules · Procedures · Inventory · Vendors · Purchase Orders · Compliance · Inspections · Testing (electrical and mechanical) · Oil Analysis (bearing and transformer lab results, trends, corrective-work links) · Safety · Documents · Meter readings · Admin (sites, users, roles)
 
 ## Roles
 
