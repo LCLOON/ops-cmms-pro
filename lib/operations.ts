@@ -401,9 +401,36 @@ export async function getWoParts(workOrderId: string): Promise<WoPart[]> {
   }));
 }
 
+// Raised when a part issue would drive stock below zero (or the item is gone).
+// Routes translate this into a 400 with a usable message instead of a blind 500.
+export class StockError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StockError';
+  }
+}
+
+// Issuing a part against a work order IS the stock transaction: the on-hand
+// quantity falls by what was used. Without this, low-stock alerts and reorder
+// points only ever reflected hand-edited numbers, never real consumption.
 export async function addWoPart(part: { workOrderId: string; inventoryItemId: string; quantity: number; unitCost: number }): Promise<WoPart> {
   const db = await getDb();
-  const result = await db.execute({ sql: 'INSERT INTO wo_parts (work_order_id, inventory_item_id, quantity, unit_cost) VALUES (?,?,?,?)', args: [part.workOrderId, part.inventoryItemId, part.quantity, part.unitCost] });
+  const qty = Number(part.quantity);
+  if (!Number.isFinite(qty) || qty <= 0) throw new StockError('Quantity must be greater than zero');
+
+  const itemRs = await db.execute({ sql: 'SELECT quantity_on_hand, unit_cost FROM inventory WHERE id = ?', args: [part.inventoryItemId] });
+  const item = itemRs.rows[0] as unknown as { quantity_on_hand: number; unit_cost: number } | undefined;
+  if (!item) throw new StockError('Inventory item not found');
+  const onHand = Number(item.quantity_on_hand) || 0;
+  if (onHand < qty) {
+    throw new StockError(`Insufficient stock: ${onHand} on hand, ${qty} requested`);
+  }
+
+  // Charge the inventory's current cost unless the caller supplied one.
+  const unitCost = Number(part.unitCost) || Number(item.unit_cost) || 0;
+  const result = await db.execute({ sql: 'INSERT INTO wo_parts (work_order_id, inventory_item_id, quantity, unit_cost) VALUES (?,?,?,?)', args: [part.workOrderId, part.inventoryItemId, qty, unitCost] });
+  await db.execute({ sql: "UPDATE inventory SET quantity_on_hand = quantity_on_hand - ?, updated_at = datetime('now') WHERE id = ?", args: [qty, part.inventoryItemId] });
+
   // Update work order parts_cost
   const totalRs = await db.execute({ sql: 'SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM wo_parts WHERE work_order_id = ?', args: [part.workOrderId] });
   const total = (totalRs.rows[0] as unknown as { t: number }).t;
@@ -412,12 +439,17 @@ export async function addWoPart(part: { workOrderId: string; inventoryItemId: st
   return parts.find(p => p.id === Number(result.lastInsertRowid))!;
 }
 
+// Removing an issued part returns the stock and reverses the cost rollup.
 export async function deleteWoPart(id: number): Promise<void> {
   const db = await getDb();
-  const rowRs = await db.execute({ sql: 'SELECT work_order_id FROM wo_parts WHERE id = ?', args: [id] });
-  const row = rowRs.rows[0] as unknown as { work_order_id: string } | undefined;
+  const rowRs = await db.execute({ sql: 'SELECT work_order_id, inventory_item_id, quantity FROM wo_parts WHERE id = ?', args: [id] });
+  const row = rowRs.rows[0] as unknown as { work_order_id: string; inventory_item_id: string; quantity: number } | undefined;
   if (!row) return;
   await db.execute({ sql: 'DELETE FROM wo_parts WHERE id = ?', args: [id] });
+  await db.execute({
+    sql: "UPDATE inventory SET quantity_on_hand = quantity_on_hand + ?, updated_at = datetime('now') WHERE id = ?",
+    args: [Number(row.quantity) || 0, row.inventory_item_id],
+  });
   const totalRs = await db.execute({ sql: 'SELECT COALESCE(SUM(quantity * unit_cost),0) as t FROM wo_parts WHERE work_order_id = ?', args: [row.work_order_id] });
   const total = (totalRs.rows[0] as unknown as { t: number }).t;
   await db.execute({ sql: 'UPDATE work_orders SET parts_cost = ? WHERE id = ?', args: [total, row.work_order_id] });
@@ -569,10 +601,31 @@ export async function getPurchaseOrders(): Promise<PurchaseOrder[]> {
 }
 
 export async function upsertPurchaseOrder(po: PurchaseOrder): Promise<void> {
-  await (await getDb()).execute({ sql: `INSERT INTO purchase_orders (id,vendor_id,po_number,status,order_date,expected_date,received_date,total_cost,notes,created_by,updated_at)
+  const db = await getDb();
+  // Receiving is a stock transaction. Read the prior status first so the
+  // restock only happens on the transition INTO 'received' — re-saving an
+  // already-received PO must not inflate inventory again.
+  const priorRs = await db.execute({ sql: 'SELECT status FROM purchase_orders WHERE id = ?', args: [po.id] });
+  const prior = priorRs.rows[0] as unknown as { status: string } | undefined;
+  const wasReceived = prior?.status === 'received';
+
+  await db.execute({ sql: `INSERT INTO purchase_orders (id,vendor_id,po_number,status,order_date,expected_date,received_date,total_cost,notes,created_by,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET vendor_id=excluded.vendor_id,po_number=excluded.po_number,status=excluded.status,order_date=excluded.order_date,expected_date=excluded.expected_date,received_date=excluded.received_date,total_cost=excluded.total_cost,notes=excluded.notes,updated_at=excluded.updated_at`,
     args: [po.id, po.vendorId || null, po.poNumber, po.status, po.orderDate, po.expectedDate, po.receivedDate, po.totalCost, po.notes, po.createdBy] });
+
+  if (po.status === 'received' && !wasReceived) {
+    const items = await db.execute({ sql: 'SELECT inventory_item_id, quantity FROM po_items WHERE po_id = ?', args: [po.id] });
+    for (const raw of items.rows) {
+      const item = raw as unknown as { inventory_item_id: string; quantity: number };
+      // Only line items tied to a stock item affect inventory; free-text lines do not.
+      if (!item.inventory_item_id) continue;
+      await db.execute({
+        sql: "UPDATE inventory SET quantity_on_hand = quantity_on_hand + ?, updated_at = datetime('now') WHERE id = ?",
+        args: [Number(item.quantity) || 0, item.inventory_item_id],
+      });
+    }
+  }
 }
 
 export async function deletePurchaseOrder(id: string): Promise<void> {

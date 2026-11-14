@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { getWoParts, addWoPart, deleteWoPart } from '@/lib/operations';
+import { getWoParts, addWoPart, deleteWoPart, StockError } from '@/lib/operations';
 
 export async function GET(request: Request) {
   try {
@@ -10,7 +10,8 @@ export async function GET(request: Request) {
     const woId = searchParams.get('woId');
     if (!woId) return NextResponse.json({ error: 'woId required' }, { status: 400 });
     return NextResponse.json(await getWoParts(woId));
-  } catch {
+  } catch (err) {
+    console.error('[api/work-orders/parts GET]', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -26,7 +27,10 @@ export async function POST(request: Request) {
 
     const part = await addWoPart(body);
     return NextResponse.json(part);
-  } catch {
+  } catch (err) {
+    // Stock problems are user-fixable, not server faults.
+    if (err instanceof StockError) return NextResponse.json({ error: err.message }, { status: 400 });
+    console.error('[api/work-orders/parts POST]', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -39,9 +43,10 @@ export async function DELETE(request: Request) {
 
     const { id } = await request.json();
     if (!id) return NextResponse.json({ error: 'ID required' }, { status: 400 });
-    await deleteWoPart(id);
+    await deleteWoPart(Number(id));
     return NextResponse.json({ success: true });
-  } catch {
+  } catch (err) {
+    console.error('[api/work-orders/parts DELETE]', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
