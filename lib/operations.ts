@@ -285,6 +285,29 @@ export async function upsertWorkOrder(wo: WorkOrder): Promise<void> {
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,type=excluded.type,priority=excluded.priority,status=excluded.status,assigned_to=excluded.assigned_to,requested_by=excluded.requested_by,due_date=excluded.due_date,completed_date=excluded.completed_date,resolution=excluded.resolution,updated_at=excluded.updated_at`,
     args: [wo.id, wo.assetId || null, wo.title, wo.description, wo.type, wo.priority, wo.status, wo.assignedTo, wo.requestedBy, wo.dueDate, wo.completedDate, wo.laborHours, wo.partsCost, wo.resolution] });
+  // The edit form can also mark a work order complete, so the return-to-service
+  // rule has to apply on this path too, not just on the status transition route.
+  if (wo.status === 'completed') await syncAssetStatusAfterCompletion(wo.assetId || null);
+}
+
+// Returning an asset to service. Completing the last open work order for a
+// down asset brings it back to operational; otherwise "Down assets" would be a
+// number that can only ever climb unless someone edited the asset by hand.
+// Deliberately conservative: any other open, in-progress or on-hold work order
+// for the asset keeps it down.
+async function syncAssetStatusAfterCompletion(assetId: string | null): Promise<void> {
+  if (!assetId) return;
+  const db = await getDb();
+  const openRs = await db.execute({
+    sql: "SELECT COUNT(*) as c FROM work_orders WHERE asset_id = ? AND status IN ('open','in_progress','on_hold')",
+    args: [assetId],
+  });
+  const stillOpen = Number((openRs.rows[0] as unknown as { c: number }).c) || 0;
+  if (stillOpen > 0) return;
+  await db.execute({
+    sql: "UPDATE assets SET status = 'operational', updated_at = datetime('now') WHERE id = ? AND status = 'down'",
+    args: [assetId],
+  });
 }
 
 export async function deleteWorkOrder(id: string): Promise<void> {
@@ -604,6 +627,11 @@ export async function transitionWorkOrderStatus(id: string, newStatus: string): 
     await db.execute({ sql: 'UPDATE work_orders SET status = ?, completed_date = ?, updated_at = ? WHERE id = ?', args: [newStatus, now, now, id] });
   } else {
     await db.execute({ sql: 'UPDATE work_orders SET status = ?, updated_at = ? WHERE id = ?', args: [newStatus, now, id] });
+  }
+  if (newStatus === 'completed') {
+    const assetRs = await db.execute({ sql: 'SELECT asset_id FROM work_orders WHERE id = ?', args: [id] });
+    const assetRow = assetRs.rows[0] as unknown as { asset_id: string | null } | undefined;
+    await syncAssetStatusAfterCompletion(assetRow?.asset_id || null);
   }
   return { ok: true };
 }
