@@ -13,6 +13,7 @@ interface PmSchedule {
   active: boolean; createdAt: string; updatedAt: string;
   assetName?: string; siteName?: string;
   deferralReason?: string; deferralApprovedBy?: string; procedureId?: string;
+  runtimeHoursSince?: number; runtimeDue?: boolean;
 }
 
 const defaultPM: PmSchedule = {
@@ -62,7 +63,16 @@ export default function PmSchedulePage() {
   const columns: Column<PmSchedule>[] = [
     { key: 'title', header: 'Title', render: p => <div className="flex items-center gap-1 min-w-0 max-w-[260px]" title={p.title}><span className="truncate text-sm">{p.title}</span>{p.deferralReason && <span className='shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400'>Deferred</span>}</div> },
     { key: 'siteName', header: 'Site / Asset', render: p => <div className="min-w-[140px]"><span className="text-xs font-medium text-blue-400 block">{p.siteName || '—'}</span><span className="text-xs text-slate-500 truncate block">{p.assetName || p.assetId}</span></div> },
-    { key: 'frequencyType', header: 'Frequency', render: p => <span className="text-xs whitespace-nowrap">{freqLabels[p.frequencyType] || p.frequencyType}{p.frequencyValue > 1 ? ` ×${p.frequencyValue}` : ''}</span> },
+    { key: 'frequencyType', header: 'Frequency', render: p => p.frequencyType === 'runtime_hours' ? (
+      // Runtime PMs are meter-driven, so show progress through the interval
+      // instead of a calendar date that cannot exist.
+      <div className="text-xs whitespace-nowrap">
+        <span className={p.runtimeDue ? 'text-red-400 font-medium' : 'text-slate-300'}>{p.runtimeHoursSince ?? 0}h / {p.frequencyValue}h</span>
+        {p.runtimeDue && <span className="ml-1 text-[10px] text-red-400">DUE</span>}
+      </div>
+    ) : (
+      <span className="text-xs whitespace-nowrap">{freqLabels[p.frequencyType] || p.frequencyType}{p.frequencyValue > 1 ? ` ×${p.frequencyValue}` : ''}</span>
+    ) },
     { key: 'nextDue', header: 'Next Due', render: p => <span className="whitespace-nowrap text-xs">{p.nextDue || '—'}</span> },
     { key: 'assignedTo', header: 'Assigned', render: p => <span className="text-xs truncate max-w-[80px] block">{p.assignedTo || '—'}</span> },
     { key: 'active', header: 'Active', render: p => <span className={`inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${p.active ? 'bg-green-500/20 text-green-400 border-green-500/30' : 'bg-slate-500/20 text-slate-400 border-slate-500/30'}`}>{p.active ? '✓' : '—'}</span> },
@@ -80,7 +90,15 @@ export default function PmSchedulePage() {
         {canEdit && (
           <button onClick={async () => {
             const today = new Date().toISOString().slice(0, 10);
-            const overdue = items.filter(pm => pm.active && (!pm.nextDue || pm.nextDue <= today));
+            // A PM is due when its calendar date has passed, or — for runtime
+            // PMs, which carry no calendar date — when its meter interval has
+            // been reached. Formally deferred PMs are never auto-generated.
+            const isDue = (pm: PmSchedule) => {
+              if (!pm.active || pm.deferralReason) return false;
+              if (pm.frequencyType === 'runtime_hours') return pm.runtimeDue === true;
+              return !!pm.nextDue && pm.nextDue <= today;
+            };
+            const overdue = items.filter(isDue);
             if (overdue.length === 0) { alert('No overdue PMs found.'); return; }
             if (!confirm(`Generate work orders for ${overdue.length} overdue PM(s)?`)) return;
             let ok = 0, fail = 0;

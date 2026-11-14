@@ -49,6 +49,11 @@ export const pmScheduleSchema = z.object({
   estimatedHours: z.number().min(0).default(1),
   active: z.boolean().default(true),
   procedureId: z.string().default(''),
+  // Deferral is a formal governance state (reason + approver), so it must
+  // survive validation. Without these fields zod stripped them on create and
+  // a deferred PM silently reverted to "not deferred" — and kept nagging.
+  deferralReason: z.string().default(''),
+  deferralApprovedBy: z.string().default(''),
 });
 
 export const procedureStepSchema = z.object({

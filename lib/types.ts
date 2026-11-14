@@ -56,6 +56,10 @@ export interface PmSchedule {
   deferralReason?: string;
   deferralApprovedBy?: string;
   procedureId?: string;
+  // Present for runtime_hours PMs: elapsed meter hours since the last
+  // completion, and whether the interval has been reached.
+  runtimeHoursSince?: number;
+  runtimeDue?: boolean;
   createdAt: string;
   updatedAt: string;
 }

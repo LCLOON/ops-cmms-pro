@@ -305,11 +305,74 @@ export async function getPmSchedules(): Promise<PmSchedule[]> {
     LEFT JOIN assets p ON a.parent_id = p.id AND p.is_component = 0
     ORDER BY pm.next_due
   `);
-  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
-    ...rowToPmSchedule(r),
-    assetName: (r.asset_name as string) || '',
-    siteName: (r.site_name as string) || '',
-  }));
+  const runtime = await getRuntimePmStatuses();
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => {
+    const base = rowToPmSchedule(r);
+    const rt = runtime[base.id];
+    return {
+      ...base,
+      assetName: (r.asset_name as string) || '',
+      siteName: (r.site_name as string) || '',
+      runtimeHoursSince: rt ? rt.hoursSince : undefined,
+      runtimeDue: rt ? rt.due : undefined,
+    };
+  });
+}
+
+// ─── Runtime-hour PM status ────────────────────────────────────
+// Runtime PMs are driven by accumulated meter hours, not the calendar: an
+// interval of 250 hours means 250 hours of running time between services.
+// The baseline is the odometer reading recorded at (or before) the last
+// completion, so completing the work order resets the count.
+export interface RuntimePmStatus { pmId: string; hoursSince: number; intervalHours: number; due: boolean; }
+
+export async function getRuntimePmStatuses(): Promise<Record<string, RuntimePmStatus>> {
+  const db = await getDb();
+  const rs = await db.execute(`
+    SELECT pm.id as pm_id,
+      pm.frequency_value as interval_hours,
+      (
+        SELECT mr.value FROM meter_readings mr
+        WHERE mr.asset_id = pm.asset_id AND mr.reading_type = 'runtime_hours'
+        ORDER BY mr.reading_date DESC, mr.id DESC LIMIT 1
+      ) as latest_hours,
+      (
+        SELECT mr.value FROM meter_readings mr
+        WHERE mr.asset_id = pm.asset_id AND mr.reading_type = 'runtime_hours'
+          AND pm.last_completed != '' AND mr.reading_date <= pm.last_completed
+        ORDER BY mr.reading_date DESC, mr.id DESC LIMIT 1
+      ) as baseline_hours,
+      (
+        SELECT mr.value FROM meter_readings mr
+        WHERE mr.asset_id = pm.asset_id AND mr.reading_type = 'runtime_hours'
+        ORDER BY mr.reading_date ASC, mr.id ASC LIMIT 1
+      ) as first_hours
+    FROM pm_schedules pm
+    WHERE pm.frequency_type = 'runtime_hours' AND pm.active = 1
+  `);
+  const out: Record<string, RuntimePmStatus> = {};
+  for (const raw of rs.rows) {
+    const r = raw as unknown as {
+      pm_id: string; interval_hours: number; latest_hours: number | null;
+      baseline_hours: number | null; first_hours: number | null;
+    };
+    const interval = Number(r.interval_hours) || 0;
+    // No meter history means the interval cannot be evaluated yet — report zero
+    // elapsed rather than inventing a due date.
+    if (r.latest_hours === null || r.latest_hours === undefined) {
+      out[r.pm_id] = { pmId: r.pm_id, hoursSince: 0, intervalHours: interval, due: false };
+      continue;
+    }
+    const latest = Number(r.latest_hours) || 0;
+    // Baseline is the odometer at the last completion. When the PM has never
+    // been completed we measure from the first reading we hold, so elapsed
+    // hours accrue from when tracking began instead of staying pinned at zero.
+    const rawBaseline = r.baseline_hours ?? r.first_hours;
+    const baseline = rawBaseline === null || rawBaseline === undefined ? latest : Number(rawBaseline) || 0;
+    const hoursSince = Math.max(0, latest - baseline);
+    out[r.pm_id] = { pmId: r.pm_id, hoursSince, intervalHours: interval, due: interval > 0 && hoursSince >= interval };
+  }
+  return out;
 }
 
 export async function upsertPmSchedule(pm: PmSchedule): Promise<void> {
@@ -366,13 +429,24 @@ export async function getSiteConfig(): Promise<SiteConfig> {
 }
 
 // ─── Dashboard Stats ───────────────────────────────────────────
+// Overdue means past its due point AND not formally deferred. A deferred PM
+// carries a reason and an approver, so it must stop nagging until the deferral
+// is cleared — otherwise the deferral fields were purely cosmetic.
 export async function getDashboardStats() {
   const db = await getDb();
   const count = async (sql: string): Promise<number> => ((await db.execute(sql)).rows[0] as unknown as { cnt: number }).cnt;
+  // next_due = '' marks a runtime-hour PM (no calendar date). Guard against it:
+  // in SQLite '' sorts before any date, so a bare `< date('now')` would flag it.
+  const calendarOverdue = await count("SELECT COUNT(*) as cnt FROM pm_schedules WHERE active = 1 AND deferral_reason = '' AND next_due != '' AND next_due < date('now')");
+  const runtime = await getRuntimePmStatuses();
+  const deferredIds = new Set(
+    ((await db.execute("SELECT id FROM pm_schedules WHERE active = 1 AND deferral_reason != ''")).rows as unknown as { id: string }[]).map(r => r.id),
+  );
+  const runtimeDue = Object.values(runtime).filter(r => r.due && !deferredIds.has(r.pmId)).length;
   return {
     totalAssets: await count('SELECT COUNT(*) as cnt FROM assets'),
     openWorkOrders: await count("SELECT COUNT(*) as cnt FROM work_orders WHERE status IN ('open','in_progress')"),
-    overduePMs: await count("SELECT COUNT(*) as cnt FROM pm_schedules WHERE next_due < date('now') AND active = 1"),
+    overduePMs: calendarOverdue + runtimeDue,
     downAssets: await count("SELECT COUNT(*) as cnt FROM assets WHERE status = 'down'"),
     lowStock: await count('SELECT COUNT(*) as cnt FROM inventory WHERE quantity_on_hand <= min_quantity'),
     completedThisMonth: await count("SELECT COUNT(*) as cnt FROM work_orders WHERE status = 'completed' AND completed_date >= date('now','start of month')"),
@@ -547,6 +621,10 @@ export async function generateWorkOrderFromPm(pmId: string, userId: number, user
 }
 
 async function calcNextDue(freqType: string, freqValue: number): Promise<string> {
+  // Runtime-hour PMs have no calendar projection: they fall due on accumulated
+  // meter hours. Returning a date here previously made every runtime PM look
+  // like a one-month task, which is the wrong interval for rotating machinery.
+  if (freqType === 'runtime_hours') return '';
   const modifiers: Record<string, string> = {
     daily: `${freqValue} days`,
     weekly: `${freqValue * 7} days`,
@@ -735,15 +813,24 @@ export async function getAnalytics(): Promise<AnalyticsData> {
     WHERE w.status = 'completed' GROUP BY w.asset_id ORDER BY totalCost DESC
   `)).rows as unknown as { assetId: string; assetName: string; laborCost: number; partsCost: number; totalCost: number }[];
 
-  // PM Compliance
-  const pmStats = (await db.execute(`
-    SELECT
-      SUM(CASE WHEN next_due >= date('now') OR last_completed >= date('now','-7 days') THEN 1 ELSE 0 END) as completed,
-      SUM(CASE WHEN next_due < date('now') AND active = 1 THEN 1 ELSE 0 END) as overdue,
-      COUNT(*) as total
-    FROM pm_schedules WHERE active = 1
-  `)).rows[0] as unknown as { completed: number; overdue: number; total: number };
-  const complianceRate = pmStats.total > 0 ? Math.round((pmStats.completed / pmStats.total) * 100) : 100;
+  // PM Compliance. Deferred PMs are excluded (they are consciously parked, with
+  // an approver) and runtime-hour PMs are evaluated on meter hours, not dates.
+  // The previous formula counted anything completed in the last 7 days as
+  // compliant, which scored genuinely overdue work as green.
+  const calendarPm = (await db.execute(`
+    SELECT COUNT(*) as total,
+      SUM(CASE WHEN next_due != '' AND next_due < date('now') THEN 1 ELSE 0 END) as overdue
+    FROM pm_schedules WHERE active = 1 AND deferral_reason = '' AND frequency_type != 'runtime_hours'
+  `)).rows[0] as unknown as { total: number; overdue: number };
+  const runtimeAll = await getRuntimePmStatuses();
+  const deferredIds = new Set(
+    ((await db.execute("SELECT id FROM pm_schedules WHERE active = 1 AND deferral_reason != ''")).rows as unknown as { id: string }[]).map(r => r.id),
+  );
+  const runtimeList = Object.values(runtimeAll).filter(r => !deferredIds.has(r.pmId));
+  const pmTotal = (Number(calendarPm.total) || 0) + runtimeList.length;
+  const pmOverdue = (Number(calendarPm.overdue) || 0) + runtimeList.filter(r => r.due).length;
+  const pmStats = { completed: Math.max(0, pmTotal - pmOverdue), overdue: pmOverdue, total: pmTotal };
+  const complianceRate = pmTotal > 0 ? Math.round((pmStats.completed / pmTotal) * 100) : 100;
 
   // WO by status
   const woByStatus = ((await db.execute(`SELECT status, COUNT(*) as count FROM work_orders GROUP BY status`)).rows as unknown as { status: string; count: number }[]);
