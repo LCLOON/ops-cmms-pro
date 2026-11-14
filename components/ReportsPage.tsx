@@ -9,6 +9,11 @@ interface ReportAnalytics {
   inventoryValue: { totalItems: number; lowStockCount: number };
   ytdStats: { totalWOs: number; totalLaborHours: number };
   backlog?: BacklogItem[];
+  assetInsights?: {
+    warranty: { id: string; name: string; warrantyExpiry: string; daysLeft: number }[];
+    failureModes: { failureMode: string; count: number }[];
+    replaceCandidates: { id: string; name: string; maintenanceCost: number; replacementCost: number; ratio: number }[];
+  };
 }
 
 const siteNames: Record<string, string> = { 'SITE-LOCK': 'Lockwood', 'SITE-KENN': 'Hydro-Kennebec', 'SITE-SHAW': 'Shawmut', 'SITE-WEST': 'Weston' };
@@ -35,6 +40,11 @@ export default function ReportsPage() {
 
   const urgentCompliance = compliance.filter((c: ComplianceItem) => c.status === 'overdue' || (c.nextDue && c.nextDue < new Date().toISOString().slice(0, 10)));
   const backlog = analytics.backlog ?? [];
+  const insights = analytics.assetInsights;
+  const warranty = insights?.warranty ?? [];
+  const failureModes = insights?.failureModes ?? [];
+  const replaceCandidates = insights?.replaceCandidates ?? [];
+  const maxFailure = Math.max(1, ...failureModes.map(f => f.count));
 
   return (
     <div className="space-y-6">
@@ -65,6 +75,48 @@ export default function ReportsPage() {
             <div className="bg-slate-800/50 rounded-lg p-3"><div className="text-2xl font-bold text-slate-300">{analytics.ytdStats.totalWOs}</div><div className="text-xs text-slate-500">YTD Work Orders</div></div>
             <div className="bg-slate-800/50 rounded-lg p-3"><div className="text-2xl font-bold text-slate-300">{analytics.ytdStats.totalLaborHours}h</div><div className="text-xs text-slate-500">YTD Labor Hours</div></div>
           </div>
+        </div>
+
+        {replaceCandidates.length > 0 && (
+          <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 lg:col-span-2">
+            <h3 className="text-sm font-semibold text-white mb-1">🔧 Replace vs Repair</h3>
+            <p className="text-xs text-slate-500 mb-4">Cumulative completed maintenance cost against the asset&apos;s replacement cost. A high ratio is a capital-planning signal, not an automatic verdict.</p>
+            <table className="w-full text-sm">
+              <thead><tr className="text-xs text-slate-500 border-b border-slate-800"><th className="text-left py-2">Asset</th><th className="text-right py-2">Maintenance</th><th className="text-right py-2">Replacement</th><th className="text-right py-2">Ratio</th></tr></thead>
+              <tbody>{replaceCandidates.map(r => (
+                <tr key={r.id} className="border-b border-slate-800/50">
+                  <td className="py-2 text-slate-300 text-xs">{r.name}</td>
+                  <td className="py-2 text-right text-slate-300 text-xs font-mono">${r.maintenanceCost.toLocaleString()}</td>
+                  <td className="py-2 text-right text-slate-400 text-xs font-mono">${r.replacementCost.toLocaleString()}</td>
+                  <td className={`py-2 text-right text-xs font-mono ${r.ratio >= 0.5 ? 'text-red-400' : r.ratio >= 0.3 ? 'text-amber-400' : 'text-slate-400'}`}>{Math.round(r.ratio * 100)}%</td>
+                </tr>))}</tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+          <h3 className="text-sm font-semibold text-white mb-4">📉 Failure Mode Pareto</h3>
+          {failureModes.length > 0 ? (
+            <div className="space-y-2">{failureModes.map(f => (
+              <div key={f.failureMode} className="flex items-center gap-3">
+                <div className="w-32 text-xs text-slate-400 truncate" title={f.failureMode}>{f.failureMode}</div>
+                <div className="flex-1 h-4 bg-slate-800 rounded-full overflow-hidden"><div className="h-full bg-orange-500/60" style={{ width: `${(f.count / maxFailure) * 100}%` }} /></div>
+                <div className="w-8 text-right text-xs text-slate-400">{f.count}</div>
+              </div>))}</div>
+          ) : <p className="text-slate-500 text-sm">No corrective work yet. Record a failure mode on assets to build this view.</p>}
+        </div>
+
+        <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+          <h3 className="text-sm font-semibold text-white mb-4">🛡️ Warranty Expiring (90 days)</h3>
+          {warranty.length > 0 ? (
+            <div className="space-y-2">{warranty.slice(0, 10).map(w => (
+              <div key={w.id} className="flex items-center justify-between text-xs py-2 border-b border-slate-800/50">
+                <span className="text-slate-300 truncate" title={w.name}>{w.name}</span>
+                <span className={w.daysLeft < 0 ? 'text-red-400' : w.daysLeft <= 30 ? 'text-amber-400' : 'text-slate-400'}>
+                  {w.daysLeft < 0 ? `expired ${Math.abs(w.daysLeft)}d ago` : `${w.daysLeft}d left`}
+                </span>
+              </div>))}</div>
+          ) : <p className="text-green-400 text-sm">No warranties expiring in the next 90 days. ✓</p>}
         </div>
 
         {backlog.length > 0 && (

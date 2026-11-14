@@ -20,6 +20,15 @@ export const assetSchema = z.object({
   criticality: z.enum(['critical','high','medium','low']).default('low'),
   notes: z.string().default(''),
   parentId: z.string().default(''),
+  // These are captured by the asset form and stored in dedicated columns, but
+  // zod strips unknown keys — omitting them here meant Replacement Cost and
+  // Failure Mode were silently discarded on every save. Optional so a partial
+  // update does not reset them to defaults.
+  area: z.string().optional(),
+  system: z.string().optional(),
+  replacementCost: z.number().min(0).optional(),
+  failureMode: z.string().optional(),
+  isComponent: z.boolean().optional(),
 });
 
 export const workOrderSchema = z.object({

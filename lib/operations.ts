@@ -869,6 +869,13 @@ export interface AnalyticsData {
   complianceOverdue: number;
   complianceTotal: number;
   backlog: { aging: string; count: number; totalCost: number }[];
+  // Asset lifecycle signals. These consume replacement_cost and failure_mode,
+  // which were captured on the asset form but never used by any report.
+  assetInsights: {
+    warranty: { id: string; name: string; warrantyExpiry: string; daysLeft: number }[];
+    failureModes: { failureMode: string; count: number }[];
+    replaceCandidates: { id: string; name: string; maintenanceCost: number; replacementCost: number; ratio: number }[];
+  };
 }
 
 export async function getAnalytics(): Promise<AnalyticsData> {
@@ -979,6 +986,53 @@ export async function getAnalytics(): Promise<AnalyticsData> {
   const compOverdue = ((await db.execute(`SELECT COUNT(*) as c FROM compliance_obligations WHERE next_due < date('now') AND status IN ('open','in_progress')`)).rows[0] as unknown as { c: number }).c;
   const compTotal = ((await db.execute('SELECT COUNT(*) as c FROM compliance_obligations')).rows[0] as unknown as { c: number }).c;
 
+  // ─── Asset lifecycle signals ─────────────────────────────────
+  // Warranty cover ending (or already gone) — nobody notices an expiry date
+  // buried in an asset record.
+  const warranty = ((await db.execute(`
+    SELECT id, name, warranty_expiry,
+      CAST(julianday(warranty_expiry) - julianday('now') AS INTEGER) as days_left
+    FROM assets
+    WHERE warranty_expiry != '' AND warranty_expiry <= date('now','+90 days')
+    ORDER BY warranty_expiry ASC LIMIT 25
+  `)).rows as unknown as { id: string; name: string; warranty_expiry: string; days_left: number }[])
+    .map(r => ({ id: r.id, name: r.name, warrantyExpiry: r.warranty_expiry, daysLeft: Number(r.days_left) }));
+
+  // Failure-mode Pareto: which failure modes actually drive corrective work.
+  const failureModes = ((await db.execute(`
+    SELECT COALESCE(NULLIF(a.failure_mode, ''), 'Unclassified') as failureMode, COUNT(*) as count
+    FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
+    WHERE w.type IN ('corrective','emergency')
+    GROUP BY failureMode ORDER BY count DESC LIMIT 12
+  `)).rows as unknown as { failureMode: string; count: number }[]);
+
+  // Replace-vs-repair: cumulative maintenance cost against replacement cost.
+  // Assets below a 10% ratio are noise; the ratio is returned so the UI can
+  // frame it rather than asserting a verdict.
+  const replaceCandidates = ((await db.execute({
+    sql: `
+    SELECT a.id, a.name,
+      a.replacement_cost as replacementCost,
+      COALESCE(SUM(w.labor_hours),0) * ? + COALESCE(SUM(w.parts_cost),0) as maintenanceCost
+    FROM assets a
+    JOIN work_orders w ON w.asset_id = a.id AND w.status = 'completed'
+    WHERE a.replacement_cost > 0
+    GROUP BY a.id
+    HAVING maintenanceCost > 0
+    ORDER BY maintenanceCost DESC LIMIT 15
+  `,
+    args: [laborRate],
+  })).rows as unknown as { id: string; name: string; replacementCost: number; maintenanceCost: number }[])
+    .map(r => ({
+      id: r.id,
+      name: r.name,
+      maintenanceCost: Math.round(Number(r.maintenanceCost) * 100) / 100,
+      replacementCost: Number(r.replacementCost),
+      ratio: Math.round((Number(r.maintenanceCost) / Number(r.replacementCost)) * 100) / 100,
+    }))
+    .filter(r => r.ratio >= 0.1)
+    .sort((a, b) => b.ratio - a.ratio);
+
   return {
     mttr, mtbf, costByAsset,
     pmCompliance: { ...pmStats, complianceRate },
@@ -987,6 +1041,7 @@ export async function getAnalytics(): Promise<AnalyticsData> {
     complianceOverdue: compOverdue,
     complianceTotal: compTotal,
     backlog: await getBacklogAging(),
+    assetInsights: { warranty, failureModes, replaceCandidates },
   };
 }
 
