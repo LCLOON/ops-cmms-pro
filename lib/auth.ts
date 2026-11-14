@@ -16,6 +16,9 @@ export interface SessionPayload {
   username: string;
   displayName: string;
   role: 'admin' | 'manager' | 'technician' | 'viewer';
+  // Carried in the token so the gate survives a page reload without a DB read
+  // on every request. Cleared by re-issuing the session after a password change.
+  forcePasswordChange?: boolean;
 }
 
 export async function createSession(payload: SessionPayload): Promise<string> {

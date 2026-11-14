@@ -47,7 +47,7 @@ export async function POST(request: Request) {
     if (!valid) return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
 
     await updateLastLogin(user.id);
-    const session = { userId: user.id, username: user.username, displayName: user.display_name, role: user.role as 'admin' | 'manager' | 'technician' | 'viewer' };
+    const session = { userId: user.id, username: user.username, displayName: user.display_name, role: user.role as 'admin' | 'manager' | 'technician' | 'viewer', forcePasswordChange: !!user.force_password_change };
     const token = await createSession(session);
     const cookie = sessionCookieOptions(token);
 

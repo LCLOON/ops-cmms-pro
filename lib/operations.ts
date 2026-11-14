@@ -101,9 +101,11 @@ export async function seedDatabase(): Promise<void> {
     ];
     const insertUser = db.prepare('INSERT OR IGNORE INTO users (username, password_hash, display_name, role) VALUES (?, ?, ?, ?)');
     for (const u of users) insertUser.run(u.username, bcryptjs.hashSync(u.password, 12), u.display_name, u.role);
-    if (!(process.env.VERCEL || process.env.NODE_ENV === 'production')) {
-      db.prepare('UPDATE users SET force_password_change = 1 WHERE username IN (?, ?, ?, ?)').run('admin', 'manager', 'tech', 'viewer');
-    }
+    // These four accounts ship with published demo passwords, so they must
+    // change on first sign-in in EVERY environment. The check used to be
+    // inverted — the flag was only set outside production, leaving a deployed
+    // system with known admin credentials.
+    db.prepare('UPDATE users SET force_password_change = 1 WHERE username IN (?, ?, ?, ?)').run('admin', 'manager', 'tech', 'viewer');
 
     // Assets
     const insAsset = db.prepare(`INSERT INTO assets (id,name,category,location,department,manufacturer,model,serial_number,install_date,warranty_expiry,status,criticality,notes,parent_id,area,system,replacement_cost,failure_mode,is_component,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -201,6 +203,15 @@ export async function upsertUser(u: { id?: number; username: string; display_nam
 
 export async function deleteUser(id: number): Promise<void> {
   await (await getDb()).execute({ sql: 'DELETE FROM users WHERE id = ?', args: [id] });
+}
+
+// Sets a new password for a user and clears the forced-change flag in one
+// statement, so the account can never end up with a new hash but a stale gate.
+export async function changeUserPassword(userId: number, newPassword: string): Promise<void> {
+  await (await getDb()).execute({
+    sql: "UPDATE users SET password_hash = ?, force_password_change = 0, updated_at = datetime('now') WHERE id = ?",
+    args: [bcryptjs.hashSync(newPassword, 12), userId],
+  });
 }
 
 // ─── Assets ────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Menu } from 'lucide-react';
 import { useAuth } from '@/components/AuthContext';
 import LoginScreen from '@/components/LoginScreen';
+import ChangePasswordScreen from '@/components/ChangePasswordScreen';
 import Sidebar from '@/components/Sidebar';
 import Dashboard from '@/components/Dashboard';
 import AssetPage from '@/components/AssetPage';
@@ -41,6 +42,11 @@ export default function AppShell() {
   if (loading) return <PageSkeleton />;
 
   if (!user) return <LoginScreen />;
+
+  // Seeded accounts carry published credentials; nothing else opens until the
+  // password is replaced. This is enforced here AND by the session claim, so a
+  // reload cannot slip past it.
+  if (user.forcePasswordChange) return <ChangePasswordScreen />;
 
   return (
     <div className="flex h-screen bg-slate-950">
