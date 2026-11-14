@@ -6,7 +6,7 @@
 // keeps every page from having to thread navigation props through the tree.
 
 export type NavPage =
-  | 'dashboard' | 'assets' | 'work-orders' | 'pm-schedule' | 'procedures'
+  | 'dashboard' | 'assets' | 'criticality' | 'work-orders' | 'pm-schedule' | 'procedures'
   | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents'
   | 'safety' | 'inspections' | 'reports' | 'electrical' | 'advisor' | 'help' | 'admin';
 

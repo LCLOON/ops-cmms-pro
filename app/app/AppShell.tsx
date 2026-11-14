@@ -9,6 +9,7 @@ import ChangePasswordScreen from '@/components/ChangePasswordScreen';
 import Sidebar from '@/components/Sidebar';
 import Dashboard from '@/components/Dashboard';
 import AssetPage from '@/components/AssetPage';
+import CriticalityPage from '@/components/CriticalityPage';
 import WorkOrderPage from '@/components/WorkOrderPage';
 import PmSchedulePage from '@/components/PmSchedulePage';
 import ProceduresPage from '@/components/ProceduresPage';
@@ -27,7 +28,7 @@ import HelpPage from '@/components/HelpPage';
 import GlobalSearch from '@/components/GlobalSearch';
 import { PageSkeleton } from '@/components/Skeletons';
 
-type Page = 'dashboard' | 'assets' | 'work-orders' | 'pm-schedule' | 'procedures' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'electrical' | 'advisor' | 'help';
+type Page = 'dashboard' | 'assets' | 'criticality' | 'work-orders' | 'pm-schedule' | 'procedures' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'electrical' | 'advisor' | 'help';
 
 export default function AppShell() {
   const { user, loading } = useAuth();
@@ -83,6 +84,7 @@ export default function AppShell() {
         <div className="p-4 lg:p-8">
           {page === 'dashboard' && <Dashboard />}
           {page === 'assets' && <AssetPage params={navParams} />}
+          {page === 'criticality' && <CriticalityPage />}
           {page === 'work-orders' && <WorkOrderPage params={navParams} />}
           {page === 'pm-schedule' && <PmSchedulePage params={navParams} />}
           {page === 'procedures' && <ProceduresPage params={navParams} />}

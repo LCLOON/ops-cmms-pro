@@ -495,6 +495,27 @@ async function initSchema(db: Client): Promise<void> {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Criticality / risk assessment. One row per assessed asset. Kept separate
+    -- from the assets table because these are analysis inputs (judgement calls
+    -- plus derived history) rather than master data.
+    CREATE TABLE IF NOT EXISTS asset_criticality (
+      asset_id TEXT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+      safety_impact INTEGER NOT NULL DEFAULT 1,
+      environmental_impact INTEGER NOT NULL DEFAULT 1,
+      production_impact INTEGER NOT NULL DEFAULT 1,
+      redundancy TEXT NOT NULL DEFAULT 'none',
+      detectability TEXT NOT NULL DEFAULT 'gradual',
+      condition INTEGER NOT NULL DEFAULT 1,
+      useful_life_years REAL NOT NULL DEFAULT 0,
+      lead_time_days INTEGER NOT NULL DEFAULT 0,
+      procurement TEXT NOT NULL DEFAULT 'off_the_shelf',
+      unit_cost REAL NOT NULL DEFAULT 0,
+      critical_spare_on_site INTEGER NOT NULL DEFAULT 0,
+      notes TEXT NOT NULL DEFAULT '',
+      assessed_by TEXT NOT NULL DEFAULT '',
+      assessed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
   `);
 
   // Column migrations run AFTER the CREATE TABLE batch. This ordering is the

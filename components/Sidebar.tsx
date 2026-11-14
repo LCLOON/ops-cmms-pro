@@ -1,10 +1,10 @@
 'use client';
 
 import React from 'react';
-import { LayoutDashboard, Wrench, ClipboardList, CalendarCheck, Package, LogOut, Building2, ShoppingCart, ShieldCheck, FileText, HardHat, Search, BarChart3, Settings, Zap, Sparkles, CircleHelp, ListChecks } from 'lucide-react';
+import { LayoutDashboard, Wrench, ClipboardList, CalendarCheck, Package, LogOut, Building2, ShoppingCart, ShieldCheck, FileText, HardHat, Search, BarChart3, Settings, Zap, Sparkles, CircleHelp, ListChecks, Target } from 'lucide-react';
 import { useAuth } from './AuthContext';
 
-type Page = 'dashboard' | 'assets' | 'work-orders' | 'pm-schedule' | 'procedures' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'electrical' | 'advisor' | 'help';
+type Page = 'dashboard' | 'assets' | 'criticality' | 'work-orders' | 'pm-schedule' | 'procedures' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'electrical' | 'advisor' | 'help';
 
 interface Props { active: Page; onNavigate: (p: Page) => void; mobileOpen?: boolean; onToggleMobile?: () => void; }
 
@@ -14,6 +14,7 @@ export default function Sidebar({ active, onNavigate, mobileOpen, onToggleMobile
   const items: { id: Page; label: string; icon: React.ReactNode }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="w-5 h-5" /> },
     { id: 'assets', label: 'Assets', icon: <Wrench className="w-5 h-5" /> },
+    { id: 'criticality', label: 'Criticality', icon: <Target className="w-5 h-5" /> },
     { id: 'work-orders', label: 'Work Orders', icon: <ClipboardList className="w-5 h-5" /> },
     { id: 'pm-schedule', label: 'PM Schedule', icon: <CalendarCheck className="w-5 h-5" /> },
     { id: 'procedures', label: 'Procedures', icon: <ListChecks className="w-5 h-5" /> },

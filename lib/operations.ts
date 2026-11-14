@@ -3,6 +3,7 @@ import { type InStatement } from '@libsql/client';
 import bcryptjs from 'bcryptjs';
 import { generateHydroAssets, generateHydroInventory } from './hydro-seed';
 import { EXCEL_VENDORS } from './excel-vendors';
+import { computeCriticality, bandToAssetCriticality, type CriticalityInput, type CriticalityResult } from './criticality';
 import type { Asset, WorkOrder, PmSchedule, InventoryItem, SiteConfig, DbUser, WoPart, WoLabor, Vendor, PurchaseOrder, PoItem, MeterReading, Site, ComplianceObligation, Inspection, Document, SafetyPermit, ElectricalTest, Procedure, ProcedureStep, ProcedureRevision, WoChecklistItem, ProcedureResponseType } from './types';
 
 // ─── Helpers ───────────────────────────────────────────────────
@@ -873,6 +874,143 @@ export async function generateDueWorkOrders(userId: number, username: string): P
   }
 
   return { generated, errors };
+}
+
+// ─── Criticality / risk assessment ─────────────────────────────
+export interface CriticalityRow extends CriticalityInput {
+  assetId: string;
+  assetName: string;
+  assetStatus: string;
+  legacyCriticality: string;
+  assessed: boolean;
+  assessedBy: string;
+  assessedAt: string;
+  notes: string;
+  result: CriticalityResult;
+}
+
+function yearsSince(dateStr: string): number | null {
+  if (!dateStr) return null;
+  const then = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(then.getTime())) return null;
+  return Math.max(0, Math.round(((Date.now() - then.getTime()) / (365.25 * 86_400_000)) * 10) / 10);
+}
+
+// Every asset is returned, assessed or not, so the tab can show coverage. For
+// unassessed assets the inputs default to the lowest risk so they rank last
+// rather than silently looking safe.
+export async function getCriticalityRegister(): Promise<CriticalityRow[]> {
+  const db = await getDb();
+  const rs = await db.execute(`
+    SELECT a.id, a.name, a.status, a.criticality AS legacy_criticality,
+      a.install_date, a.replacement_cost,
+      c.safety_impact, c.environmental_impact, c.production_impact, c.redundancy,
+      c.detectability, c.condition, c.useful_life_years, c.lead_time_days,
+      c.procurement, c.unit_cost, c.critical_spare_on_site, c.notes,
+      c.assessed_by, c.assessed_at,
+      (SELECT COUNT(*) FROM work_orders w
+        WHERE w.asset_id = a.id AND w.type IN ('corrective','emergency')
+          AND w.created_at >= date('now','-12 months')) AS failures_12m
+    FROM assets a LEFT JOIN asset_criticality c ON c.asset_id = a.id
+    ORDER BY a.name
+  `);
+
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => {
+    const assessed = r.assessed_at !== null && r.assessed_at !== undefined;
+    const input: CriticalityInput = {
+      safetyImpact: num(r.safety_impact) || 1,
+      environmentalImpact: num(r.environmental_impact) || 1,
+      productionImpact: num(r.production_impact) || 1,
+      redundancy: (str(r.redundancy) || 'none') as CriticalityInput['redundancy'],
+      detectability: (str(r.detectability) || 'gradual') as CriticalityInput['detectability'],
+      condition: num(r.condition) || 1,
+      failureCount12m: num(r.failures_12m),
+      ageYears: yearsSince(str(r.install_date)),
+      usefulLifeYears: num(r.useful_life_years),
+      leadTimeDays: num(r.lead_time_days),
+      procurement: (str(r.procurement) || 'off_the_shelf') as CriticalityInput['procurement'],
+      unitCost: num(r.unit_cost) || num(r.replacement_cost),
+      criticalSpareOnSite: num(r.critical_spare_on_site) === 1,
+    };
+    return {
+      assetId: str(r.id),
+      assetName: str(r.name),
+      assetStatus: str(r.status),
+      legacyCriticality: str(r.legacy_criticality),
+      assessed,
+      assessedBy: str(r.assessed_by),
+      assessedAt: str(r.assessed_at),
+      notes: str(r.notes),
+      ...input,
+      result: computeCriticality(input),
+    };
+  });
+}
+
+// Saving an assessment also writes the derived band back to the asset's
+// criticality level, so every other screen reflects the analysis.
+export async function upsertCriticality(
+  assetId: string,
+  input: CriticalityInput,
+  assessedBy: string,
+  notes = '',
+): Promise<CriticalityRow | null> {
+  const db = await getDb();
+  const existing = await db.execute({
+    sql: `SELECT a.install_date,
+        (SELECT COUNT(*) FROM work_orders w
+          WHERE w.asset_id = a.id AND w.type IN ('corrective','emergency')
+            AND w.created_at >= date('now','-12 months')) AS failures
+      FROM assets a WHERE a.id = ?`,
+    args: [assetId],
+  });
+  const meta = existing.rows[0] as unknown as { install_date: string; failures: number } | undefined;
+  if (!meta) return null;
+
+  // Age and failure history are facts the server owns. Trusting the client for
+  // them made the band computed at save time disagree with the band the
+  // register recomputes on read.
+  const derived: CriticalityInput = {
+    ...input,
+    ageYears: yearsSince(str(meta.install_date)),
+    failureCount12m: num(meta.failures),
+  };
+
+  await db.execute({
+    sql: `INSERT INTO asset_criticality (asset_id, safety_impact, environmental_impact, production_impact,
+        redundancy, detectability, condition, useful_life_years, lead_time_days, procurement, unit_cost,
+        critical_spare_on_site, notes, assessed_by, assessed_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+      ON CONFLICT(asset_id) DO UPDATE SET
+        safety_impact=excluded.safety_impact, environmental_impact=excluded.environmental_impact,
+        production_impact=excluded.production_impact, redundancy=excluded.redundancy,
+        detectability=excluded.detectability, condition=excluded.condition,
+        useful_life_years=excluded.useful_life_years, lead_time_days=excluded.lead_time_days,
+        procurement=excluded.procurement, unit_cost=excluded.unit_cost,
+        critical_spare_on_site=excluded.critical_spare_on_site, notes=excluded.notes,
+        assessed_by=excluded.assessed_by, assessed_at=excluded.assessed_at`,
+    args: [
+      assetId,
+      clampInt(derived.safetyImpact, 1, 5), clampInt(derived.environmentalImpact, 1, 5), clampInt(derived.productionImpact, 1, 5),
+      str(derived.redundancy) || 'none', str(derived.detectability) || 'gradual', clampInt(derived.condition, 1, 5),
+      num(derived.usefulLifeYears), Math.round(num(derived.leadTimeDays)), str(derived.procurement) || 'off_the_shelf',
+      num(derived.unitCost), derived.criticalSpareOnSite ? 1 : 0, str(notes), str(assessedBy),
+    ],
+  });
+
+  const result = computeCriticality(derived);
+  await db.execute({
+    sql: "UPDATE assets SET criticality = ?, updated_at = datetime('now') WHERE id = ?",
+    args: [bandToAssetCriticality(result.band), assetId],
+  });
+
+  const all = await getCriticalityRegister();
+  return all.find(r => r.assetId === assetId) ?? null;
+}
+
+function clampInt(v: unknown, lo: number, hi: number): number {
+  const n = Math.round(num(v));
+  return Math.min(hi, Math.max(lo, n));
 }
 
 // ─── Vendors ───────────────────────────────────────────────────

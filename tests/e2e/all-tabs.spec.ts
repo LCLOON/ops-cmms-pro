@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const tabs = [
-  'Dashboard', 'Assets', 'Work Orders', 'PM Schedule', 'Procedures',
+  'Dashboard', 'Assets', 'Criticality', 'Work Orders', 'PM Schedule', 'Procedures',
   'Inventory', 'Vendors', 'Purchase Orders', 'Compliance', 'Documents',
   'Safety', 'Inspections', 'Reports', 'Electrical', 'AI Advisor', 'Help', 'Admin',
 ];
