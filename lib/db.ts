@@ -401,10 +401,11 @@ async function initSchema(db: Client): Promise<void> {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    CREATE TABLE IF NOT EXISTS electrical_tests (
+    CREATE TABLE IF NOT EXISTS testing_records (
       id TEXT PRIMARY KEY,
       asset_id TEXT REFERENCES assets(id) ON DELETE CASCADE,
-      test_type TEXT NOT NULL DEFAULT 'other' CHECK(test_type IN ('transformer_oil','dga','breaker_timing','relay_test','battery_test','charger_test','ir_scan','ground_test','cable_test','protection_settings','other')),
+      discipline TEXT NOT NULL DEFAULT 'electrical' CHECK(discipline IN ('electrical','mechanical')),
+      test_type TEXT NOT NULL DEFAULT 'other',
       test_date TEXT NOT NULL DEFAULT (date('now')),
       results TEXT NOT NULL DEFAULT '',
       next_due TEXT NOT NULL DEFAULT '',
@@ -414,6 +415,28 @@ async function initSchema(db: Client): Promise<void> {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS root_cause_analyses (
+      id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      work_order_id TEXT REFERENCES work_orders(id) ON DELETE SET NULL,
+      failure_date TEXT NOT NULL DEFAULT (date('now')),
+      failure_mode TEXT NOT NULL DEFAULT '',
+      symptoms TEXT NOT NULL DEFAULT '',
+      cause_category TEXT NOT NULL DEFAULT 'unknown',
+      root_cause TEXT NOT NULL DEFAULT '',
+      contributing_factors TEXT NOT NULL DEFAULT '',
+      corrective_action TEXT NOT NULL DEFAULT '',
+      preventive_action TEXT NOT NULL DEFAULT '',
+      action_owner TEXT NOT NULL DEFAULT '',
+      due_date TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','investigating','actions_in_progress','verified','closed')),
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_root_cause_asset_date ON root_cause_analyses(asset_id, failure_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_root_cause_status_due ON root_cause_analyses(status, due_date);
 
     -- Reusable procedure library (the SOP), separate from one-off work order notes.
     CREATE TABLE IF NOT EXISTS procedures (
@@ -517,6 +540,18 @@ async function initSchema(db: Client): Promise<void> {
     );
 
   `);
+
+  // Preserve existing electrical tests while moving to a discipline-neutral
+  // register that can also hold mechanical test types.
+  if (await tableExists(db, 'electrical_tests')) {
+    await db.executeMultiple(`
+      INSERT OR IGNORE INTO testing_records
+        (id, asset_id, discipline, test_type, test_date, results, next_due, tested_by, status, notes, created_at, updated_at)
+      SELECT id, asset_id, 'electrical', test_type, test_date, results, next_due, tested_by, status, notes, created_at, updated_at
+      FROM electrical_tests;
+      DROP TABLE electrical_tests;
+    `);
+  }
 
   // Column migrations run AFTER the CREATE TABLE batch. This ordering is the
   // whole point: probing for tables/columns before the schema exists makes

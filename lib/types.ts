@@ -342,16 +342,49 @@ export interface WoChecklistItem {
   completedAt: string;
 }
 
-export interface ElectricalTest {
+export type TestDiscipline = 'electrical' | 'mechanical';
+export type EquipmentTestType =
+  | 'transformer_oil' | 'dga' | 'breaker_timing' | 'relay_test' | 'battery_test'
+  | 'charger_test' | 'ir_scan' | 'ground_test' | 'cable_test' | 'protection_settings'
+  | 'vibration_analysis' | 'lubrication_analysis' | 'alignment_check' | 'pressure_test'
+  | 'load_test' | 'performance_test' | 'ultrasound' | 'thermography' | 'ndt_inspection' | 'other';
+
+export interface EquipmentTest {
   id: string;
   assetId: string;
-  testType: 'transformer_oil' | 'dga' | 'breaker_timing' | 'relay_test' | 'battery_test' | 'charger_test' | 'ir_scan' | 'ground_test' | 'cable_test' | 'protection_settings' | 'other';
+  discipline: TestDiscipline;
+  testType: EquipmentTestType;
   testDate: string;
   results: string;
   nextDue: string;
   testedBy: string;
   status: 'pending' | 'passed' | 'failed' | 'attention';
   notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ElectricalTest = EquipmentTest;
+
+export type RootCauseStatus = 'open' | 'investigating' | 'actions_in_progress' | 'verified' | 'closed';
+export type RootCauseCategory = 'design' | 'installation' | 'operation' | 'maintenance' | 'material' | 'environment' | 'human_factors' | 'unknown' | 'other';
+
+export interface RootCauseAnalysis {
+  id: string;
+  assetId: string;
+  workOrderId: string;
+  failureDate: string;
+  failureMode: string;
+  symptoms: string;
+  causeCategory: RootCauseCategory;
+  rootCause: string;
+  contributingFactors: string;
+  correctiveAction: string;
+  preventiveAction: string;
+  actionOwner: string;
+  dueDate: string;
+  status: RootCauseStatus;
+  createdBy: string;
   createdAt: string;
   updatedAt: string;
 }

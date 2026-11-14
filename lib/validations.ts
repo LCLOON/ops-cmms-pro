@@ -66,6 +66,39 @@ export const pmScheduleSchema = z.object({
   deferralApprovedBy: z.string().default(''),
 });
 
+export const equipmentTestSchema = z.object({
+  assetId: z.string().default(''),
+  discipline: z.enum(['electrical', 'mechanical']).default('electrical'),
+  testType: z.enum([
+    'transformer_oil', 'dga', 'breaker_timing', 'relay_test', 'battery_test',
+    'charger_test', 'ir_scan', 'ground_test', 'cable_test', 'protection_settings',
+    'vibration_analysis', 'lubrication_analysis', 'alignment_check', 'pressure_test',
+    'load_test', 'performance_test', 'ultrasound', 'thermography', 'ndt_inspection', 'other',
+  ]).default('other'),
+  testDate: z.string().default(''),
+  results: z.string().default(''),
+  nextDue: z.string().default(''),
+  testedBy: z.string().default(''),
+  status: z.enum(['pending', 'passed', 'failed', 'attention']).default('pending'),
+  notes: z.string().default(''),
+});
+
+export const rootCauseAnalysisSchema = z.object({
+  assetId: z.string().min(1, 'Asset required'),
+  workOrderId: z.string().default(''),
+  failureDate: z.string().default(''),
+  failureMode: z.string().default(''),
+  symptoms: z.string().default(''),
+  causeCategory: z.enum(['design', 'installation', 'operation', 'maintenance', 'material', 'environment', 'human_factors', 'unknown', 'other']).default('unknown'),
+  rootCause: z.string().default(''),
+  contributingFactors: z.string().default(''),
+  correctiveAction: z.string().default(''),
+  preventiveAction: z.string().default(''),
+  actionOwner: z.string().default(''),
+  dueDate: z.string().default(''),
+  status: z.enum(['open', 'investigating', 'actions_in_progress', 'verified', 'closed']).default('open'),
+});
+
 export const procedureStepSchema = z.object({
   stepOrder: z.number().int().min(1).default(1),
   instruction: z.string().min(1, 'Step instruction required'),

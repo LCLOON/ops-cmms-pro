@@ -6,15 +6,19 @@
 // keeps every page from having to thread navigation props through the tree.
 
 export type NavPage =
-  | 'dashboard' | 'assets' | 'criticality' | 'work-orders' | 'pm-schedule' | 'procedures'
+  | 'dashboard' | 'assets' | 'criticality' | 'root-cause-analysis' | 'work-orders' | 'pm-schedule' | 'procedures'
   | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents'
-  | 'safety' | 'inspections' | 'reports' | 'electrical' | 'advisor' | 'help' | 'admin';
+  | 'safety' | 'inspections' | 'reports' | 'testing' | 'advisor' | 'help' | 'admin';
 
 export interface NavParams {
   /** Open/highlight this specific record. */
   focusId?: string;
   /** Pre-filter a list to this asset. */
   assetId?: string;
+  /** Draft context for raising corrective work from a failed test result. */
+  workOrderDraft?: { title: string; description: string; type?: string };
+  /** Open or create an RCA associated with this work order. */
+  workOrderId?: string;
   /** Pre-fill a list's search box (e.g. a free-text supplier name). */
   search?: string;
 }

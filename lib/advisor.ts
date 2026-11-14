@@ -9,7 +9,7 @@
 import {
   getAssets, getWorkOrders, getPmSchedules, getInventory, getAnalytics,
   getDashboardStats, getComplianceObligations, getInspections, getDocuments,
-  getSafetyPermits, getElectricalTests, getVendors, getPurchaseOrders, getBacklogAging,
+  getSafetyPermits, getTestingRecords, getRootCauseAnalyses, getVendors, getPurchaseOrders, getBacklogAging,
 } from './operations';
 import { KNOWLEDGE, type KnowledgeEntry } from './knowledge';
 
@@ -217,14 +217,24 @@ async function dataAnswer(intent: string, question: string): Promise<{ text: str
     return { text: lines.join('\n'), sources: ['getSafetyPermits'], data: { active: active.length }, page: 'safety' };
   }
 
-  if (wants(/\b(electrical|relay|dga|transformer|breaker timing|battery test)\b/)) {
-    const tests = await getElectricalTests();
+  if (wants(/\b(root cause|rca|repeat failure|failure analysis)\b/)) {
+    const analyses = await getRootCauseAnalyses();
+    const active = analyses.filter(analysis => !['verified', 'closed'].includes(analysis.status));
+    const lines = [
+      `Root cause analyses: ${analyses.length}. Open or active: ${active.length}.`,
+      ...active.slice(0, 6).map(analysis => `• ${analysis.failureMode || 'Unspecified failure'} on ${analysis.assetId} — ${analysis.status}${analysis.dueDate ? `, action due ${analysis.dueDate}` : ''}`),
+    ];
+    return { text: lines.join('\n'), sources: ['getRootCauseAnalyses'], data: { active: active.length }, page: 'root-cause-analysis' };
+  }
+
+  if (wants(/\b(testing|test results?|electrical|mechanical test|vibration|relay|dga|transformer|breaker timing|battery test|ultrasound)\b/)) {
+    const tests = await getTestingRecords();
     const failed = tests.filter(t => t.status === 'failed' || t.status === 'attention');
     const lines = [
-      `Electrical tests: ${tests.length}. Failed or needing attention: ${failed.length}.`,
-      ...failed.slice(0, 6).map(t => `• ${t.testType} on ${t.assetId || 'unlinked asset'} — ${t.status}, tested ${t.testDate}`),
+      `Equipment tests: ${tests.length}. Failed or needing attention: ${failed.length}.`,
+      ...failed.slice(0, 6).map(t => `• ${t.discipline} ${t.testType} on ${t.assetId || 'unlinked asset'} — ${t.status}, tested ${t.testDate}`),
     ];
-    return { text: lines.join('\n'), sources: ['getElectricalTests'], data: { failed: failed.length }, page: 'electrical' };
+    return { text: lines.join('\n'), sources: ['getTestingRecords'], data: { failed: failed.length }, page: 'testing' };
   }
 
   if (wants(/\b(vendor|supplier|purchase order|po\b|procurement)\b/)) {
@@ -345,7 +355,7 @@ export async function askAdvisor({ question, role }: AdvisorContext): Promise<Ad
 
   if (parts.length === 0) {
     parts.push(
-      'I could not match that to a module or a live metric. Try naming a module (Assets, Work Orders, PM Schedule, Inventory, Vendors, Purchase Orders, Compliance, Documents, Safety, Inspections, Electrical, Reports, Admin) or asking for today\'s status — for example "what needs attention?" or "how many overdue PMs?".',
+      'I could not match that to a module or a live metric. Try naming a module (Assets, Criticality, Root Cause Analysis, Work Orders, PM Schedule, Testing, Inventory, Vendors, Purchase Orders, Compliance, Documents, Safety, Inspections, Reports, Admin) or asking for today\'s status — for example "what needs attention?" or "how many overdue PMs?".',
     );
   }
 

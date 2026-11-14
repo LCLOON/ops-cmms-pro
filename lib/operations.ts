@@ -4,7 +4,7 @@ import bcryptjs from 'bcryptjs';
 import { generateHydroAssets, generateHydroInventory } from './hydro-seed';
 import { EXCEL_VENDORS } from './excel-vendors';
 import { computeCriticality, bandToAssetCriticality, type CriticalityInput, type CriticalityResult } from './criticality';
-import type { Asset, WorkOrder, PmSchedule, InventoryItem, SiteConfig, DbUser, WoPart, WoLabor, Vendor, PurchaseOrder, PoItem, MeterReading, Site, ComplianceObligation, Inspection, Document, SafetyPermit, ElectricalTest, Procedure, ProcedureStep, ProcedureRevision, WoChecklistItem, ProcedureResponseType } from './types';
+import type { Asset, WorkOrder, PmSchedule, InventoryItem, SiteConfig, DbUser, WoPart, WoLabor, Vendor, PurchaseOrder, PoItem, MeterReading, Site, ComplianceObligation, Inspection, Document, SafetyPermit, EquipmentTest, RootCauseAnalysis, Procedure, ProcedureStep, ProcedureRevision, WoChecklistItem, ProcedureResponseType } from './types';
 
 // ─── Helpers ───────────────────────────────────────────────────
 function nowIso(): string { return new Date().toISOString(); }
@@ -1526,24 +1526,72 @@ export async function upsertSafetyPermit(s: SafetyPermit): Promise<void> {
     args: [str(s.id), str(s.workOrderId) || null, str(s.assetId) || null, str(s.permitType) || 'other', str(s.permitNumber), str(s.issuedBy), str(s.issuedDate), str(s.expiryDate), str(s.status) || 'draft', str(s.description), str(s.hazards), str(s.precautions), str(s.approvedBy), str(s.attachments)] });
 }
 
-// ─── Electrical Tests ──────────────────────────────────────────
-export async function getElectricalTests(): Promise<ElectricalTest[]> {
-  const rs = await (await getDb()).execute('SELECT * FROM electrical_tests ORDER BY test_date DESC');
+// ─── Equipment Testing ─────────────────────────────────────────
+export async function getTestingRecords(): Promise<EquipmentTest[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM testing_records ORDER BY test_date DESC');
   return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as string, assetId: (r.asset_id ?? '') as string,
-    testType: r.test_type as ElectricalTest['testType'],
+    discipline: r.discipline as EquipmentTest['discipline'],
+    testType: r.test_type as EquipmentTest['testType'],
     testDate: r.test_date as string, results: r.results as string,
     nextDue: r.next_due as string, testedBy: r.tested_by as string,
-    status: r.status as ElectricalTest['status'],
+    status: r.status as EquipmentTest['status'],
     notes: r.notes as string, createdAt: r.created_at as string, updatedAt: r.updated_at as string,
   }));
 }
 
-export async function upsertElectricalTest(t: ElectricalTest): Promise<void> {
-  await (await getDb()).execute({ sql: `INSERT INTO electrical_tests (id,asset_id,test_type,test_date,results,next_due,tested_by,status,notes,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET test_type=excluded.test_type,test_date=excluded.test_date,results=excluded.results,next_due=excluded.next_due,tested_by=excluded.tested_by,status=excluded.status,notes=excluded.notes,updated_at=excluded.updated_at`,
-    args: [str(t.id), str(t.assetId) || null, str(t.testType) || 'other', str(t.testDate), str(t.results), str(t.nextDue), str(t.testedBy), str(t.status) || 'pending', str(t.notes)] });
+export async function upsertTestingRecord(t: EquipmentTest): Promise<void> {
+  await (await getDb()).execute({ sql: `INSERT INTO testing_records (id,asset_id,discipline,test_type,test_date,results,next_due,tested_by,status,notes,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,discipline=excluded.discipline,test_type=excluded.test_type,test_date=excluded.test_date,results=excluded.results,next_due=excluded.next_due,tested_by=excluded.tested_by,status=excluded.status,notes=excluded.notes,updated_at=excluded.updated_at`,
+    args: [str(t.id), str(t.assetId) || null, str(t.discipline) || 'electrical', str(t.testType) || 'other', str(t.testDate), str(t.results), str(t.nextDue), str(t.testedBy), str(t.status) || 'pending', str(t.notes)] });
+}
+
+// ─── Root Cause Analysis ───────────────────────────────────────
+function rowToRootCauseAnalysis(r: Record<string, unknown>): RootCauseAnalysis {
+  return {
+    id: str(r.id), assetId: str(r.asset_id), workOrderId: str(r.work_order_id),
+    failureDate: str(r.failure_date), failureMode: str(r.failure_mode),
+    symptoms: str(r.symptoms), causeCategory: r.cause_category as RootCauseAnalysis['causeCategory'],
+    rootCause: str(r.root_cause), contributingFactors: str(r.contributing_factors),
+    correctiveAction: str(r.corrective_action), preventiveAction: str(r.preventive_action),
+    actionOwner: str(r.action_owner), dueDate: str(r.due_date),
+    status: r.status as RootCauseAnalysis['status'], createdBy: str(r.created_by),
+    createdAt: str(r.created_at), updatedAt: str(r.updated_at),
+  };
+}
+
+export async function getRootCauseAnalyses(): Promise<RootCauseAnalysis[]> {
+  const rs = await (await getDb()).execute('SELECT * FROM root_cause_analyses ORDER BY failure_date DESC, created_at DESC');
+  return (rs.rows as unknown as Record<string, unknown>[]).map(rowToRootCauseAnalysis);
+}
+
+export async function getRootCauseAnalysis(id: string): Promise<RootCauseAnalysis | null> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM root_cause_analyses WHERE id = ?', args: [id] });
+  const row = rs.rows[0] as unknown as Record<string, unknown> | undefined;
+  return row ? rowToRootCauseAnalysis(row) : null;
+}
+
+export async function upsertRootCauseAnalysis(analysis: RootCauseAnalysis): Promise<void> {
+  await (await getDb()).execute({
+    sql: `INSERT INTO root_cause_analyses
+      (id,asset_id,work_order_id,failure_date,failure_mode,symptoms,cause_category,root_cause,contributing_factors,
+       corrective_action,preventive_action,action_owner,due_date,status,created_by,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,work_order_id=excluded.work_order_id,
+        failure_date=excluded.failure_date,failure_mode=excluded.failure_mode,symptoms=excluded.symptoms,
+        cause_category=excluded.cause_category,root_cause=excluded.root_cause,
+        contributing_factors=excluded.contributing_factors,corrective_action=excluded.corrective_action,
+        preventive_action=excluded.preventive_action,action_owner=excluded.action_owner,due_date=excluded.due_date,
+        status=excluded.status,updated_at=excluded.updated_at`,
+    args: [
+      str(analysis.id), str(analysis.assetId), str(analysis.workOrderId) || null, str(analysis.failureDate),
+      str(analysis.failureMode), str(analysis.symptoms), str(analysis.causeCategory) || 'unknown',
+      str(analysis.rootCause), str(analysis.contributingFactors), str(analysis.correctiveAction),
+      str(analysis.preventiveAction), str(analysis.actionOwner), str(analysis.dueDate),
+      str(analysis.status) || 'open', str(analysis.createdBy),
+    ],
+  });
 }
 
 // ─── Backlog aging (for dashboard / reports) ──────────────────
@@ -1853,4 +1901,5 @@ export async function deleteComplianceObligation(id: string): Promise<void> { aw
 export async function deleteInspection(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM inspections WHERE id = ?', args: [id] }); }
 export async function deleteDocument(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM documents WHERE id = ?', args: [id] }); }
 export async function deleteSafetyPermit(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM safety_permits WHERE id = ?', args: [id] }); }
-export async function deleteElectricalTest(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM electrical_tests WHERE id = ?', args: [id] }); }
+export async function deleteTestingRecord(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM testing_records WHERE id = ?', args: [id] }); }
+export async function deleteRootCauseAnalysis(id: string): Promise<void> { await (await getDb()).execute({ sql: 'DELETE FROM root_cause_analyses WHERE id = ?', args: [id] }); }

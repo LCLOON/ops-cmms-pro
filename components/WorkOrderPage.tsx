@@ -6,6 +6,7 @@ import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
 import { Trash2, Plus, Package, Clock, ListChecks, ExternalLink } from 'lucide-react';
 import { navigate, type NavParams } from '@/lib/nav';
+import { bandToAssetCriticality, type RiskBand } from '@/lib/criticality';
 
 interface WorkOrder {
   id: string; assetId: string; title: string; description: string;
@@ -43,10 +44,18 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
   const { canEdit, loading: authLoading } = useAuth();
   const [items, setItems] = useState<WorkOrder[]>([]);
   const [assets, setAssets] = useState<{ id: string; name: string }[]>([]);
+  const [riskBands, setRiskBands] = useState<Record<string, RiskBand>>({});
+  const [criticalityLoadFailed, setCriticalityLoadFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editItem, setEditItem] = useState<WorkOrder | null>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState<WorkOrder>(defaultWO);
+  const [showForm, setShowForm] = useState(() => Boolean(params?.workOrderDraft));
+  const [form, setForm] = useState<WorkOrder>(() => params?.workOrderDraft ? {
+    ...defaultWO,
+    assetId: params.assetId ?? '',
+    title: params.workOrderDraft.title,
+    description: params.workOrderDraft.description,
+    type: params.workOrderDraft.type ?? 'corrective',
+  } : defaultWO);
   const [saving, setSaving] = useState(false);
 
   const fetchItems = useCallback(() => {
@@ -60,6 +69,25 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
       .then((rows: { id: string; name: string }[]) => { if (Array.isArray(rows)) setAssets(rows.map(a => ({ id: a.id, name: a.name }))); })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetch('/api/criticality')
+      .then(r => {
+        if (!r.ok) throw new Error(`Criticality request failed (${r.status})`);
+        return r.json();
+      })
+      .then((data: { rows?: { assetId: string; assessed: boolean; result: { band: RiskBand } }[] }) => {
+        if (!Array.isArray(data.rows)) throw new Error('Criticality response did not contain rows');
+        setRiskBands(Object.fromEntries(
+          data.rows.filter(row => row.assessed).map(row => [row.assetId, row.result.band]),
+        ));
+      })
+      .catch(error => {
+        console.error('[work-orders] Failed to load criticality suggestions', error);
+        setCriticalityLoadFailed(true);
+      });
+  }, []);
+
   const assetName = (id: string) => assets.find(a => a.id === id)?.name ?? id;
 
   // A link from Assets arrives with assetId, so the list opens already scoped.
@@ -132,26 +160,76 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
         initialSearch={params?.focusId ?? ''} highlightId={params?.focusId} />
       {showForm && (
         <Modal open={showForm} onClose={() => setShowForm(false)} title={editItem ? `Edit WO: ${editItem.id}` : 'New Work Order'}>
-          <WOForm form={form} setForm={setForm} onSave={save} saving={saving} isEdit={!!editItem} assets={assets} />
+          <WOForm form={form} setForm={setForm} onSave={save} saving={saving} isEdit={!!editItem} assets={assets}
+            riskBands={riskBands} criticalityLoadFailed={criticalityLoadFailed} />
         </Modal>
       )}
     </div>
   );
 }
 
-function WOForm({ form, setForm, onSave, saving, isEdit, assets }: { form: WorkOrder; setForm: (f: WorkOrder) => void; onSave: () => void; saving: boolean; isEdit: boolean; assets: { id: string; name: string }[]; }) {
+function WOForm({ form, setForm, onSave, saving, isEdit, assets, riskBands, criticalityLoadFailed }: {
+  form: WorkOrder;
+  setForm: (f: WorkOrder) => void;
+  onSave: () => void;
+  saving: boolean;
+  isEdit: boolean;
+  assets: { id: string; name: string }[];
+  riskBands: Record<string, RiskBand>;
+  criticalityLoadFailed: boolean;
+}) {
   const [tab, setTab] = useState<'details' | 'parts' | 'labor' | 'checklist'>('details');
+  const [priorityOverridden, setPriorityOverridden] = useState(isEdit);
   const update = (k: keyof WorkOrder, v: string | number) => setForm({ ...form, [k]: v });
+  useEffect(() => {
+    if (isEdit || priorityOverridden || !form.assetId) return;
+    const band = riskBands[form.assetId];
+    const priority = band ? bandToAssetCriticality(band) : 'medium';
+    if (form.priority !== priority) setForm({ ...form, priority });
+  }, [form, isEdit, priorityOverridden, riskBands, setForm]);
+
   const field = (label: string, key: keyof WorkOrder, type = 'text') => (
-    <div><label className="block text-xs text-slate-500 mb-1">{label}</label>
-      <input type={type} value={type === 'number' ? (form[key] as number) : (form[key] as string) ?? ''}
+    <div><label htmlFor={`wo-${key}`} className="block text-xs text-slate-500 mb-1">{label}</label>
+      <input id={`wo-${key}`} type={type} value={type === 'number' ? (form[key] as number) : (form[key] as string) ?? ''}
         onChange={e => update(key, type === 'number' ? Number(e.target.value) : e.target.value)}
         className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /></div>);
   const select = (label: string, key: keyof WorkOrder, opts: string[]) => (
-    <div><label className="block text-xs text-slate-500 mb-1">{label}</label>
-      <select value={form[key] as string} onChange={e => update(key, e.target.value)}
+    <div><label htmlFor={`wo-${key}`} className="block text-xs text-slate-500 mb-1">{label}</label>
+      <select id={`wo-${key}`} value={form[key] as string} onChange={e => update(key, e.target.value)}
         className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
         {opts.map(o => <option key={o} value={o}>{o.replace('_', ' ')}</option>)}</select></div>);
+  const riskBand = form.assetId ? riskBands[form.assetId] : undefined;
+  const recommendedPriority = riskBand ? bandToAssetCriticality(riskBand) : undefined;
+  const priorityLabel = (priority: string) => priority[0].toUpperCase() + priority.slice(1);
+  const priorityField = (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label htmlFor="wo-priority" className="block text-xs text-slate-500">Priority</label>
+        {recommendedPriority && form.priority !== recommendedPriority && (
+          <button type="button" onClick={() => {
+            setForm({ ...form, priority: recommendedPriority });
+            setPriorityOverridden(false);
+          }} className="text-[11px] text-blue-400 hover:text-blue-300">
+            Use {priorityLabel(recommendedPriority)} recommendation
+          </button>
+        )}
+      </div>
+      <select id="wo-priority" value={form.priority} onChange={e => {
+        update('priority', e.target.value);
+        setPriorityOverridden(true);
+      }} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        {['critical', 'high', 'medium', 'low'].map(priority => <option key={priority} value={priority}>{priority}</option>)}
+      </select>
+      {criticalityLoadFailed
+        ? <p className="text-[11px] text-amber-300 mt-1">Risk suggestion unavailable; choose the priority manually.</p>
+        : riskBand
+          ? <p className="text-[11px] text-slate-500 mt-1">
+              {priorityOverridden ? 'Manual priority; ' : 'Suggested priority; '}
+              assessed risk is Band {riskBand} ({priorityLabel(bandToAssetCriticality(riskBand))}). You can change this anytime.
+            </p>
+          : form.assetId && <p className="text-[11px] text-slate-500 mt-1">This asset has not been assessed; choose the priority manually.</p>}
+    </div>
+  );
 
   return (
     <div>
@@ -168,14 +246,22 @@ function WOForm({ form, setForm, onSave, saving, isEdit, assets }: { form: WorkO
             {field('Title', 'title')}
             {/* A picker instead of a free-text id: typed asset ids were the
                 easiest way to create a work order attached to nothing. */}
-            <div><label className="block text-xs text-slate-500 mb-1">Asset</label>
-              <select value={form.assetId} onChange={e => setForm({ ...form, assetId: e.target.value })}
+            <div><label htmlFor="wo-asset" className="block text-xs text-slate-500 mb-1">Asset</label>
+              <select id="wo-asset" value={form.assetId} onChange={e => {
+                const assetId = e.target.value;
+                const next = { ...form, assetId };
+                if (!isEdit && !priorityOverridden) {
+                  const band = riskBands[assetId];
+                  next.priority = band ? bandToAssetCriticality(band) : 'medium';
+                }
+                setForm(next);
+              }}
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="">No asset (site level)</option>
                 {assets.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select></div>
             {select('Type', 'type', ['corrective','preventive','predictive','emergency','inspection'])}
-            {select('Priority', 'priority', ['critical','high','medium','low'])}
+            {priorityField}
             {/* Completing a work order is gated on its checklist, so it is not
                 offered as a plain field edit — the API rejects it here. Use the
                 status transition control in the list instead. Keep it visible
@@ -189,6 +275,12 @@ function WOForm({ form, setForm, onSave, saving, isEdit, assets }: { form: WorkO
             <textarea value={form.description} onChange={e => update('description', e.target.value)} rows={2} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /></div>
           <div><label className="block text-xs text-slate-500 mb-1">Resolution</label>
             <textarea value={form.resolution} onChange={e => update('resolution', e.target.value)} rows={2} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /></div>
+          {isEdit && form.assetId && ['corrective', 'emergency'].includes(form.type) && (
+            <button type="button" onClick={() => navigate('root-cause-analysis', { assetId: form.assetId, workOrderId: form.id })}
+              className="text-amber-300 hover:text-amber-200 text-sm underline">
+              Start or update Root Cause Analysis
+            </button>
+          )}
         </div>
       )}
       {tab === 'checklist' && isEdit && <ChecklistPanel workOrderId={form.id} assetId={form.assetId} />}

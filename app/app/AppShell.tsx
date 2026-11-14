@@ -10,6 +10,7 @@ import Sidebar from '@/components/Sidebar';
 import Dashboard from '@/components/Dashboard';
 import AssetPage from '@/components/AssetPage';
 import CriticalityPage from '@/components/CriticalityPage';
+import RootCauseAnalysisPage from '@/components/RootCauseAnalysisPage';
 import WorkOrderPage from '@/components/WorkOrderPage';
 import PmSchedulePage from '@/components/PmSchedulePage';
 import ProceduresPage from '@/components/ProceduresPage';
@@ -22,13 +23,13 @@ import SafetyPage from '@/components/SafetyPage';
 import InspectionsPage from '@/components/InspectionsPage';
 import ReportsPage from '@/components/ReportsPage';
 import AdminPage from '@/components/AdminPage';
-import ElectricalTestsPage from '@/components/ElectricalTestsPage';
+import TestingPage from '@/components/TestingPage';
 import AdvisorPage from '@/components/AdvisorPage';
 import HelpPage from '@/components/HelpPage';
 import GlobalSearch from '@/components/GlobalSearch';
 import { PageSkeleton } from '@/components/Skeletons';
 
-type Page = 'dashboard' | 'assets' | 'criticality' | 'work-orders' | 'pm-schedule' | 'procedures' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'electrical' | 'advisor' | 'help';
+type Page = 'dashboard' | 'assets' | 'criticality' | 'root-cause-analysis' | 'work-orders' | 'pm-schedule' | 'procedures' | 'inventory' | 'vendors' | 'purchase-orders' | 'compliance' | 'documents' | 'safety' | 'inspections' | 'reports' | 'admin' | 'testing' | 'advisor' | 'help';
 
 export default function AppShell() {
   const { user, loading } = useAuth();
@@ -85,6 +86,7 @@ export default function AppShell() {
           {page === 'dashboard' && <Dashboard />}
           {page === 'assets' && <AssetPage params={navParams} />}
           {page === 'criticality' && <CriticalityPage />}
+          {page === 'root-cause-analysis' && <RootCauseAnalysisPage params={navParams} />}
           {page === 'work-orders' && <WorkOrderPage params={navParams} />}
           {page === 'pm-schedule' && <PmSchedulePage params={navParams} />}
           {page === 'procedures' && <ProceduresPage params={navParams} />}
@@ -97,7 +99,7 @@ export default function AppShell() {
           {page === 'inspections' && <InspectionsPage />}
           {page === 'reports' && <ReportsPage />}
           {page === 'admin' && <AdminPage />}
-          {page === 'electrical' && <ElectricalTestsPage />}
+          {page === 'testing' && <TestingPage />}
           {page === 'advisor' && <AdvisorPage onNavigate={p => setPage(p as Page)} />}
           {page === 'help' && <HelpPage onNavigate={p => setPage(p as Page)} />}
         </div>
