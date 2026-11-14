@@ -14,6 +14,18 @@ interface ReportAnalytics {
     failureModes: { failureMode: string; count: number }[];
     replaceCandidates: { id: string; name: string; maintenanceCost: number; replacementCost: number; ratio: number }[];
   };
+  availability?: {
+    windowDays: number;
+    fleetAvailabilityPct: number;
+    assets: { assetId: string; assetName: string; downtimeHours: number; availabilityPct: number; incidents: number; openDowntime: boolean }[];
+  };
+  maintenanceMix?: { month: string; planned: number; reactive: number }[];
+  plannedPct?: number;
+  pmGaps?: { assetId: string; assetName: string; failures: number }[];
+  workload?: {
+    openByAssignee: { name: string; openWorkOrders: number; criticalOpen: number }[];
+    hours30d: { name: string; hours: number }[];
+  };
 }
 
 const siteNames: Record<string, string> = { 'SITE-LOCK': 'Lockwood', 'SITE-KENN': 'Hydro-Kennebec', 'SITE-SHAW': 'Shawmut', 'SITE-WEST': 'Weston' };
@@ -45,6 +57,11 @@ export default function ReportsPage() {
   const failureModes = insights?.failureModes ?? [];
   const replaceCandidates = insights?.replaceCandidates ?? [];
   const maxFailure = Math.max(1, ...failureModes.map(f => f.count));
+  const availability = analytics.availability;
+  const maintenanceMix = analytics.maintenanceMix ?? [];
+  const pmGaps = analytics.pmGaps ?? [];
+  const workload = analytics.workload;
+  const plannedPct = analytics.plannedPct ?? 0;
 
   return (
     <div className="space-y-6">
@@ -75,6 +92,89 @@ export default function ReportsPage() {
             <div className="bg-slate-800/50 rounded-lg p-3"><div className="text-2xl font-bold text-slate-300">{analytics.ytdStats.totalWOs}</div><div className="text-xs text-slate-500">YTD Work Orders</div></div>
             <div className="bg-slate-800/50 rounded-lg p-3"><div className="text-2xl font-bold text-slate-300">{analytics.ytdStats.totalLaborHours}h</div><div className="text-xs text-slate-500">YTD Labor Hours</div></div>
           </div>
+        </div>
+
+        <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+          <h3 className="text-sm font-semibold text-white mb-1">⚖️ Planned vs Reactive</h3>
+          <p className="text-xs text-slate-500 mb-4">Share of raised work that was planned rather than a reaction to a failure. Higher is better.</p>
+          <div className="flex items-baseline gap-2 mb-4">
+            <span className={`text-3xl font-bold ${plannedPct >= 70 ? 'text-green-400' : plannedPct >= 50 ? 'text-amber-400' : 'text-red-400'}`}>{plannedPct}%</span>
+            <span className="text-xs text-slate-500">planned (6 months)</span>
+          </div>
+          {maintenanceMix.length > 0 ? (
+            <div className="space-y-2">{maintenanceMix.map(m => {
+              const total = m.planned + m.reactive || 1;
+              return (
+                <div key={m.month} className="flex items-center gap-2 text-xs">
+                  <span className="w-16 text-slate-500 flex-shrink-0">{m.month}</span>
+                  <div className="flex-1 h-4 rounded overflow-hidden flex bg-slate-800">
+                    <div className="h-full bg-green-500/60" style={{ width: `${(m.planned / total) * 100}%` }} title={`${m.planned} planned`} />
+                    <div className="h-full bg-red-500/60" style={{ width: `${(m.reactive / total) * 100}%` }} title={`${m.reactive} reactive`} />
+                  </div>
+                  <span className="w-16 text-right text-slate-500 flex-shrink-0">{m.planned}/{m.reactive}</span>
+                </div>);
+            })}</div>
+          ) : <p className="text-slate-500 text-sm">No work orders in the last 6 months.</p>}
+        </div>
+
+        <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+          <h3 className="text-sm font-semibold text-white mb-1">🧑‍🔧 Technician Workload</h3>
+          <p className="text-xs text-slate-500 mb-4">Open work by assignee, and hours logged in the last 30 days by account. These are different keys, so they are shown separately.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <h4 className="text-[10px] uppercase tracking-wide text-slate-500 mb-2">Open work</h4>
+              {(workload?.openByAssignee?.length ?? 0) > 0 ? (
+                <div className="space-y-1">{[...(workload?.openByAssignee ?? [])].map(w => (
+                  <div key={w.name} className="flex items-center justify-between text-xs">
+                    <span className="text-slate-300 truncate" title={w.name}>{w.name}</span>
+                    <span className="flex-shrink-0 ml-2"><span className="text-slate-400">{w.openWorkOrders}</span>{w.criticalOpen > 0 && <span className="text-red-400 ml-1">({w.criticalOpen} crit)</span>}</span>
+                  </div>))}</div>
+              ) : <p className="text-slate-500 text-xs">No open assignments.</p>}
+            </div>
+            <div>
+              <h4 className="text-[10px] uppercase tracking-wide text-slate-500 mb-2">Hours logged (30d)</h4>
+              {(workload?.hours30d?.length ?? 0) > 0 ? (
+                <div className="space-y-1">{[...(workload?.hours30d ?? [])].map(h => (
+                  <div key={h.name} className="flex items-center justify-between text-xs">
+                    <span className="text-slate-300 truncate" title={h.name}>{h.name}</span>
+                    <span className="text-slate-400 font-mono flex-shrink-0 ml-2">{h.hours}h</span>
+                  </div>))}</div>
+              ) : <p className="text-slate-500 text-xs">No hours logged in 30 days.</p>}
+            </div>
+          </div>
+        </div>
+
+        {pmGaps.length > 0 && (
+          <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 lg:col-span-2">
+            <h3 className="text-sm font-semibold text-white mb-1">🕳️ PM Coverage Gaps</h3>
+            <p className="text-xs text-slate-500 mb-4">Assets with two or more corrective jobs in 90 days and no active PM schedule. These are the obvious candidates for preventive work.</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{pmGaps.map(g => (
+              <div key={g.assetId} className="flex items-center justify-between bg-slate-800/50 border border-slate-700/60 rounded-lg px-3 py-2">
+                <span className="text-xs text-slate-200 truncate" title={g.assetName}>{g.assetName}</span>
+                <span className="text-xs text-amber-400 flex-shrink-0 ml-2">{g.failures} failures</span>
+              </div>))}</div>
+          </div>
+        )}
+
+        <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+          <h3 className="text-sm font-semibold text-white mb-1">⏱️ Availability (last {availability?.windowDays ?? 30} days)</h3>
+          <p className="text-xs text-slate-500 mb-4">Share of time assets were not recorded as down. Open downtime counts up to now.</p>
+          {availability ? (
+            <>
+              <div className="flex items-baseline gap-2 mb-4">
+                <span className={`text-3xl font-bold ${availability.fleetAvailabilityPct >= 95 ? 'text-green-400' : availability.fleetAvailabilityPct >= 85 ? 'text-amber-400' : 'text-red-400'}`}>{availability.fleetAvailabilityPct}%</span>
+                <span className="text-xs text-slate-500">fleet average</span>
+              </div>
+              {availability.assets.length > 0 ? (
+                <div className="space-y-2">{availability.assets.map(a => (
+                  <div key={a.assetId} className="flex items-center gap-3 text-xs">
+                    <span className="text-slate-300 truncate flex-1" title={a.assetName}>{a.assetName}{a.openDowntime && <span className="ml-1 text-[10px] text-red-400">DOWN</span>}</span>
+                    <span className="text-slate-500 flex-shrink-0">{a.downtimeHours}h / {a.incidents}</span>
+                    <span className={`font-mono flex-shrink-0 ${a.availabilityPct < 90 ? 'text-red-400' : a.availabilityPct < 99 ? 'text-amber-400' : 'text-slate-400'}`}>{a.availabilityPct}%</span>
+                  </div>))}</div>
+              ) : <p className="text-green-400 text-sm">No downtime recorded in this window. ✓</p>}
+            </>
+          ) : <p className="text-slate-500 text-sm">Availability unavailable.</p>}
         </div>
 
         {replaceCandidates.length > 0 && (

@@ -240,10 +240,110 @@ export async function getAsset(id: string): Promise<Asset | null> {
 
 export async function upsertAsset(asset: Asset): Promise<void> {
   const db = await getDb();
+  // Prior status decides whether this save opens or closes a downtime interval.
+  const priorRs = await db.execute({ sql: 'SELECT status FROM assets WHERE id = ?', args: [asset.id] });
+  const prior = priorRs.rows[0] as unknown as { status: string } | undefined;
+
   await db.execute({ sql: `INSERT INTO assets (id,name,category,location,department,manufacturer,model,serial_number,install_date,warranty_expiry,status,criticality,notes,parent_id,area,system,replacement_cost,failure_mode,is_component,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,category=excluded.category,location=excluded.location,department=excluded.department,manufacturer=excluded.manufacturer,model=excluded.model,serial_number=excluded.serial_number,install_date=excluded.install_date,warranty_expiry=excluded.warranty_expiry,status=excluded.status,criticality=excluded.criticality,notes=excluded.notes,parent_id=excluded.parent_id,area=excluded.area,system=excluded.system,replacement_cost=excluded.replacement_cost,failure_mode=excluded.failure_mode,is_component=excluded.is_component,updated_at=excluded.updated_at`,
     args: [asset.id, asset.name, asset.category, asset.location, asset.department, asset.manufacturer, asset.model, asset.serialNumber, asset.installDate, asset.warrantyExpiry, asset.status, asset.criticality, asset.notes, asset.parentId || '', asset.area || '', asset.system || '', asset.replacementCost ?? 0, asset.failureMode ?? '', asset.isComponent ? 1 : 0] });
+
+  await syncDowntime(asset.id, prior?.status, asset.status);
+}
+
+// Opens a downtime interval when an asset becomes 'down' and closes it when it
+// stops being down. Idempotent: any already-open interval is closed first so an
+// asset can never accumulate overlapping intervals.
+async function syncDowntime(assetId: string, fromStatus: string | undefined, toStatus: string): Promise<void> {
+  const db = await getDb();
+  if (toStatus === 'down' && fromStatus !== 'down') {
+    await db.execute({ sql: "UPDATE asset_downtime SET ended_at = datetime('now') WHERE asset_id = ? AND ended_at = ''", args: [assetId] });
+    await db.execute({ sql: "INSERT INTO asset_downtime (asset_id, started_at, reason) VALUES (?, datetime('now'), ?)", args: [assetId, 'Asset set to down'] });
+    return;
+  }
+  if (fromStatus === 'down' && toStatus !== 'down') {
+    await db.execute({ sql: "UPDATE asset_downtime SET ended_at = datetime('now') WHERE asset_id = ? AND ended_at = ''", args: [assetId] });
+  }
+}
+
+export interface AssetDowntime {
+  id: number; assetId: string; startedAt: string; endedAt: string; reason: string; workOrderId: string;
+}
+
+export async function getAssetDowntime(assetId: string): Promise<AssetDowntime[]> {
+  const rs = await (await getDb()).execute({ sql: 'SELECT * FROM asset_downtime WHERE asset_id = ? ORDER BY started_at DESC LIMIT 50', args: [assetId] });
+  return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
+    id: r.id as number,
+    assetId: r.asset_id as string,
+    startedAt: r.started_at as string,
+    endedAt: r.ended_at as string,
+    reason: r.reason as string,
+    workOrderId: r.work_order_id as string,
+  }));
+}
+
+export interface AvailabilityRow {
+  assetId: string; assetName: string; downtimeHours: number; availabilityPct: number; incidents: number; openDowntime: boolean;
+}
+
+// Availability over a trailing window: the share of wall-clock time each asset
+// was not recorded as down. Interval time is clamped to the window so old
+// downtime does not leak into the number.
+export async function getAvailability(windowDays = 30): Promise<{ windowDays: number; fleetAvailabilityPct: number; assets: AvailabilityRow[] }> {
+  const db = await getDb();
+  const days = Math.min(Math.max(Math.trunc(windowDays) || 30, 1), 365);
+  const assetsRs = await db.execute('SELECT id, name FROM assets');
+  const assets = assetsRs.rows as unknown as { id: string; name: string }[];
+
+  const dtRs = await db.execute({
+    sql: `SELECT asset_id, started_at, ended_at FROM asset_downtime
+          WHERE ended_at = '' OR ended_at >= datetime('now', ?) OR started_at >= datetime('now', ?)`,
+    args: [`-${days} days`, `-${days} days`],
+  });
+
+  const nowMs = Date.now();
+  const windowStartMs = nowMs - days * 86_400_000;
+  const perAsset = new Map<string, { hours: number; incidents: number; open: boolean }>();
+
+  for (const raw of dtRs.rows) {
+    const r = raw as unknown as { asset_id: string; started_at: string; ended_at: string };
+    const startMs = Date.parse(`${r.started_at.replace(' ', 'T')}Z`);
+    if (Number.isNaN(startMs)) continue;
+    const endMs = r.ended_at ? Date.parse(`${r.ended_at.replace(' ', 'T')}Z`) : nowMs;
+    if (Number.isNaN(endMs)) continue;
+    const from = Math.max(startMs, windowStartMs);
+    const to = Math.max(Math.min(endMs, nowMs), from);
+    const entry = perAsset.get(r.asset_id) ?? { hours: 0, incidents: 0, open: false };
+    entry.hours += (to - from) / 3_600_000;
+    entry.incidents += 1;
+    if (!r.ended_at) entry.open = true;
+    perAsset.set(r.asset_id, entry);
+  }
+
+  const windowHours = days * 24;
+  const rows: AvailabilityRow[] = assets
+    .map(a => {
+      const d = perAsset.get(a.id);
+      const downtimeHours = d ? Math.round(d.hours * 10) / 10 : 0;
+      return {
+        assetId: a.id,
+        assetName: a.name,
+        downtimeHours,
+        availabilityPct: Math.max(0, Math.round((1 - downtimeHours / windowHours) * 1000) / 10),
+        incidents: d?.incidents ?? 0,
+        openDowntime: d?.open ?? false,
+      };
+    })
+    .filter(r => r.downtimeHours > 0)
+    .sort((a, b) => a.availabilityPct - b.availabilityPct)
+    .slice(0, 12);
+
+  const totalDowntime = [...perAsset.values()].reduce((sum, v) => sum + v.hours, 0);
+  const fleetWindow = Math.max(1, assets.length) * windowHours;
+  const fleetAvailabilityPct = Math.max(0, Math.round((1 - totalDowntime / fleetWindow) * 1000) / 10);
+
+  return { windowDays: days, fleetAvailabilityPct, assets: rows };
 }
 
 export async function deleteAsset(id: string): Promise<void> {
@@ -304,10 +404,15 @@ async function syncAssetStatusAfterCompletion(assetId: string | null): Promise<v
   });
   const stillOpen = Number((openRs.rows[0] as unknown as { c: number }).c) || 0;
   if (stillOpen > 0) return;
-  await db.execute({
+  const res = await db.execute({
     sql: "UPDATE assets SET status = 'operational', updated_at = datetime('now') WHERE id = ? AND status = 'down'",
     args: [assetId],
   });
+  // The asset really did come back, so close its downtime interval too —
+  // otherwise availability would keep counting an asset as down forever.
+  if (Number(res.rowsAffected) > 0) {
+    await db.execute({ sql: "UPDATE asset_downtime SET ended_at = datetime('now') WHERE asset_id = ? AND ended_at = ''", args: [assetId] });
+  }
 }
 
 export async function deleteWorkOrder(id: string): Promise<void> {
@@ -708,6 +813,60 @@ async function calcNextDue(freqType: string, freqValue: number): Promise<string>
   return (rs.rows[0] as unknown as { d: string }).d;
 }
 
+// ─── Due PM generation (scheduler-safe) ────────────────────────
+// Generates work orders for every PM that is due right now: calendar PMs past
+// their next_due, plus runtime PMs past their hour interval. Formally deferred
+// PMs are skipped. Safe to call repeatedly — generating advances next_due /
+// last_completed, so the same PM is not picked up again until it is due again.
+export interface DueGenerationResult {
+  generated: { pmId: string; workOrderId: string }[];
+  errors: { pmId: string; error: string }[];
+}
+
+export async function generateDueWorkOrders(userId: number, username: string): Promise<DueGenerationResult> {
+  const db = await getDb();
+  const generated: { pmId: string; workOrderId: string }[] = [];
+  const errors: { pmId: string; error: string }[] = [];
+
+  const dueIds = new Set<string>();
+  const calendarRs = await db.execute(`
+    SELECT id FROM pm_schedules
+    WHERE active = 1 AND deferral_reason = '' AND frequency_type != 'runtime_hours'
+      AND next_due != '' AND next_due <= date('now')
+  `);
+  for (const raw of calendarRs.rows) dueIds.add((raw as unknown as { id: string }).id);
+
+  const deferredRs = await db.execute("SELECT id FROM pm_schedules WHERE active = 1 AND deferral_reason != ''");
+  const deferred = new Set((deferredRs.rows as unknown as { id: string }[]).map(r => r.id));
+  const runtime = await getRuntimePmStatuses();
+  for (const r of Object.values(runtime)) {
+    if (r.due && !deferred.has(r.pmId)) dueIds.add(r.pmId);
+  }
+
+  for (const pmId of dueIds) {
+    try {
+      const workOrderId = await generateWorkOrderFromPm(pmId, userId, username);
+      if (workOrderId) generated.push({ pmId, workOrderId });
+      else errors.push({ pmId, error: 'PM schedule not found' });
+    } catch (err) {
+      errors.push({ pmId, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  if (generated.length > 0) {
+    await logAudit({
+      userId: userId || undefined,
+      username,
+      action: 'pm.auto_generate',
+      entityType: 'pm_schedule',
+      entityId: '',
+      details: `Generated ${generated.length} work order(s) from due PMs`,
+    });
+  }
+
+  return { generated, errors };
+}
+
 // ─── Vendors ───────────────────────────────────────────────────
 function rowToVendor(r: Record<string, unknown>): Vendor {
   return {
@@ -876,6 +1035,22 @@ export interface AnalyticsData {
     failureModes: { failureMode: string; count: number }[];
     replaceCandidates: { id: string; name: string; maintenanceCost: number; replacementCost: number; ratio: number }[];
   };
+  // Uptime is the headline reliability number; it is derived from explicit
+  // downtime intervals rather than inferred from work orders.
+  availability: { windowDays: number; fleetAvailabilityPct: number; assets: AvailabilityRow[] };
+  // Planned vs reactive split (the standard maintenance-mix KPI) and where PM
+  // coverage is missing despite repeated failures.
+  maintenanceMix: { month: string; planned: number; reactive: number }[];
+  plannedPct: number;
+  pmGaps: { assetId: string; assetName: string; failures: number }[];
+  // Technician workload, reported as two dimensions on purpose: open work is
+  // keyed by the free-text assigned_to field, hours are keyed by the login that
+  // logged them. Forcing them into one row would imply a join that does not
+  // exist and would split one person across two rows.
+  workload: {
+    openByAssignee: { name: string; openWorkOrders: number; criticalOpen: number }[];
+    hours30d: { name: string; hours: number }[];
+  };
 }
 
 export async function getAnalytics(): Promise<AnalyticsData> {
@@ -1033,6 +1208,50 @@ export async function getAnalytics(): Promise<AnalyticsData> {
     .filter(r => r.ratio >= 0.1)
     .sort((a, b) => b.ratio - a.ratio);
 
+  // ─── Maintenance mix (planned vs reactive) ───────────────────
+  // The honest reading of "is preventive work paying off": what share of the
+  // work being raised is planned rather than a reaction to a failure.
+  const maintenanceMix = ((await db.execute(`
+    SELECT strftime('%Y-%m', created_at) as month,
+      SUM(CASE WHEN type IN ('preventive','predictive','inspection') THEN 1 ELSE 0 END) as planned,
+      SUM(CASE WHEN type IN ('corrective','emergency') THEN 1 ELSE 0 END) as reactive
+    FROM work_orders WHERE created_at >= date('now','-6 months')
+    GROUP BY month ORDER BY month
+  `)).rows as unknown as { month: string; planned: number; reactive: number }[])
+    .map(r => ({ month: r.month, planned: Number(r.planned) || 0, reactive: Number(r.reactive) || 0 }));
+  const totalPlanned = maintenanceMix.reduce((s, m) => s + m.planned, 0);
+  const totalReactive = maintenanceMix.reduce((s, m) => s + m.reactive, 0);
+  const plannedPct = totalPlanned + totalReactive > 0
+    ? Math.round((totalPlanned / (totalPlanned + totalReactive)) * 100)
+    : 100;
+
+  // Assets with repeated corrective work but no active PM schedule: the clearest
+  // actionable gap in a preventive programme.
+  const pmGaps = ((await db.execute(`
+    SELECT a.id as assetId, a.name as assetName, COUNT(*) as failures
+    FROM work_orders w JOIN assets a ON w.asset_id = a.id
+    WHERE w.type IN ('corrective','emergency') AND w.created_at >= date('now','-90 days')
+      AND NOT EXISTS (SELECT 1 FROM pm_schedules pm WHERE pm.asset_id = a.id AND pm.active = 1)
+    GROUP BY a.id HAVING COUNT(*) >= 2 ORDER BY failures DESC LIMIT 10
+  `)).rows as unknown as { assetId: string; assetName: string; failures: number }[])
+    .map(r => ({ assetId: r.assetId, assetName: r.assetName, failures: Number(r.failures) || 0 }));
+
+  // ─── Technician workload ────────────────────────────────────
+  const openByAssignee = ((await db.execute(`
+    SELECT COALESCE(NULLIF(assigned_to, ''), 'Unassigned') as name,
+      COUNT(*) as openWorkOrders,
+      SUM(CASE WHEN priority = 'critical' THEN 1 ELSE 0 END) as criticalOpen
+    FROM work_orders WHERE status IN ('open','in_progress','on_hold')
+    GROUP BY name ORDER BY criticalOpen DESC, openWorkOrders DESC LIMIT 12
+  `)).rows as unknown as { name: string; openWorkOrders: number; criticalOpen: number }[])
+    .map(r => ({ name: r.name, openWorkOrders: Number(r.openWorkOrders) || 0, criticalOpen: Number(r.criticalOpen) || 0 }));
+  const hours30d = ((await db.execute(`
+    SELECT COALESCE(NULLIF(username, ''), 'Unknown') as name, SUM(hours) as hours
+    FROM wo_labor WHERE logged_date >= date('now','-30 days')
+    GROUP BY name ORDER BY hours DESC LIMIT 12
+  `)).rows as unknown as { name: string; hours: number }[])
+    .map(r => ({ name: r.name, hours: Math.round((Number(r.hours) || 0) * 10) / 10 }));
+
   return {
     mttr, mtbf, costByAsset,
     pmCompliance: { ...pmStats, complianceRate },
@@ -1042,6 +1261,8 @@ export async function getAnalytics(): Promise<AnalyticsData> {
     complianceTotal: compTotal,
     backlog: await getBacklogAging(),
     assetInsights: { warranty, failureModes, replaceCandidates },
+    availability: await getAvailability(30),
+    maintenanceMix, plannedPct, pmGaps, workload: { openByAssignee, hours30d },
   };
 }
 

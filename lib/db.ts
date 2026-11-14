@@ -481,6 +481,20 @@ async function initSchema(db: Client): Promise<void> {
       completed_at TEXT NOT NULL DEFAULT ''
     );
 
+    -- Downtime intervals per asset. Availability cannot be derived from work
+    -- orders alone (a repair may happen while the asset keeps running), so the
+    -- intervals are recorded explicitly: opened when an asset goes down and
+    -- closed when it comes back. ended_at = '' means still down.
+    CREATE TABLE IF NOT EXISTS asset_downtime (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      ended_at TEXT NOT NULL DEFAULT '',
+      reason TEXT NOT NULL DEFAULT '',
+      work_order_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
   `);
 
   // Column migrations run AFTER the CREATE TABLE batch. This ordering is the
