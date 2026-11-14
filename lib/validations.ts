@@ -26,7 +26,8 @@ export const assetSchema = z.object({
   // update does not reset them to defaults.
   area: z.string().optional(),
   system: z.string().optional(),
-  replacementCost: z.number().min(0).optional(),
+  // Coerced because form inputs submit strings; an empty box becomes 0.
+  replacementCost: z.coerce.number().min(0).optional(),
   failureMode: z.string().optional(),
   isComponent: z.boolean().optional(),
 });
