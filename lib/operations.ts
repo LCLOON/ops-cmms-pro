@@ -784,32 +784,35 @@ export async function getAnalytics(): Promise<AnalyticsData> {
 
   // MTTR: average days between created_at and completed_date for completed WOs.
   // Clamped at 0 so backdated completions can never report negative repair time.
+  // LEFT JOIN: asset_id is nullable, and an inner join silently dropped every
+  // site-level work order from the repair-time metrics while ytdStats still
+  // counted it — the two numbers disagreed. Unassigned work is grouped as such.
   const mttr = (await db.execute(`
-    SELECT w.asset_id as assetId, a.name as assetName,
+    SELECT COALESCE(w.asset_id, '') as assetId, COALESCE(a.name, 'Unassigned') as assetName,
       ROUND(AVG(MAX(0.0, julianday(w.completed_date) - julianday(w.created_at))), 1) as mttrDays,
       COUNT(*) as workOrderCount
-    FROM work_orders w JOIN assets a ON w.asset_id = a.id
+    FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' AND w.completed_date != '' AND w.created_at != ''
     GROUP BY w.asset_id ORDER BY mttrDays DESC
   `)).rows as unknown as { assetId: string; assetName: string; mttrDays: number; workOrderCount: number }[];
 
   // MTBF: days between first failure and now divided by failure count
   const mtbf = (await db.execute(`
-    SELECT w.asset_id as assetId, a.name as assetName,
+    SELECT COALESCE(w.asset_id, '') as assetId, COALESCE(a.name, 'Unassigned') as assetName,
       CAST((julianday('now') - julianday(MIN(w.created_at))) / COUNT(*) AS INTEGER) as mtbfDays,
       COUNT(*) as failureCount
-    FROM work_orders w JOIN assets a ON w.asset_id = a.id
+    FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
     WHERE w.type IN ('corrective','emergency') GROUP BY w.asset_id HAVING COUNT(*) > 0
     ORDER BY mtbfDays ASC
   `)).rows as unknown as { assetId: string; assetName: string; mtbfDays: number; failureCount: number }[];
 
   // Cost by asset
   const costByAsset = (await db.execute(`
-    SELECT w.asset_id as assetId, a.name as assetName,
+    SELECT COALESCE(w.asset_id, '') as assetId, COALESCE(a.name, 'Unassigned') as assetName,
       COALESCE(SUM(w.labor_hours), 0) * 75 as laborCost,
       COALESCE(SUM(w.parts_cost), 0) as partsCost,
       COALESCE(SUM(w.labor_hours), 0) * 75 + COALESCE(SUM(w.parts_cost), 0) as totalCost
-    FROM work_orders w JOIN assets a ON w.asset_id = a.id
+    FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' GROUP BY w.asset_id ORDER BY totalCost DESC
   `)).rows as unknown as { assetId: string; assetName: string; laborCost: number; partsCost: number; totalCost: number }[];
 
@@ -849,8 +852,8 @@ export async function getAnalytics(): Promise<AnalyticsData> {
 
   // Top cost assets
   const topCostAssets = ((await db.execute(`
-    SELECT a.name, COALESCE(SUM(w.labor_hours),0)*75 + COALESCE(SUM(w.parts_cost),0) as total
-    FROM work_orders w JOIN assets a ON w.asset_id = a.id
+    SELECT COALESCE(a.name, 'Unassigned') as name, COALESCE(SUM(w.labor_hours),0)*75 + COALESCE(SUM(w.parts_cost),0) as total
+    FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
     WHERE w.status = 'completed' GROUP BY w.asset_id ORDER BY total DESC LIMIT 5
   `)).rows as unknown as { name: string; total: number }[]);
 
