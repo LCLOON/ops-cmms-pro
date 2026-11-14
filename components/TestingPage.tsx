@@ -4,10 +4,10 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
-import { navigate } from '@/lib/nav';
+import { navigate, type NavParams } from '@/lib/nav';
 import type { EquipmentTest, TestDiscipline } from '@/lib/types';
 
-interface AssetOption { id: string; name: string; }
+interface AssetOption { id: string; name: string; siteId?: string; }
 
 const testTypes: Record<TestDiscipline, EquipmentTest['testType'][]> = {
   electrical: ['transformer_oil', 'dga', 'breaker_timing', 'relay_test', 'battery_test', 'charger_test', 'ir_scan', 'ground_test', 'cable_test', 'protection_settings', 'other'],
@@ -29,7 +29,7 @@ const statusStyles: Record<EquipmentTest['status'], string> = {
 
 const humanize = (value: string) => value.replace(/_/g, ' ');
 
-export default function TestingPage() {
+export default function TestingPage({ params }: { params?: NavParams }) {
   const { canEdit, isAdmin } = useAuth();
   const [items, setItems] = useState<EquipmentTest[]>([]);
   const [assets, setAssets] = useState<AssetOption[]>([]);
@@ -52,7 +52,7 @@ export default function TestingPage() {
   useEffect(() => {
     fetch('/api/assets')
       .then(r => { if (!r.ok) throw new Error(`Assets request failed (${r.status})`); return r.json(); })
-      .then((rows: AssetOption[]) => { if (Array.isArray(rows)) setAssets(rows.map(a => ({ id: a.id, name: a.name }))); })
+      .then((rows: AssetOption[]) => { if (Array.isArray(rows)) setAssets(rows); })
       .catch(error => console.error('[testing] Failed to load assets', error));
   }, []);
 
@@ -95,11 +95,14 @@ export default function TestingPage() {
           item.results ? `Results: ${item.results}` : '',
           item.notes ? `Notes: ${item.notes}` : '',
         ].filter(Boolean).join('\n'),
+        siteId: assets.find(asset => asset.id === item.assetId)?.siteId ?? '',
+        sourceTestingRecordId: item.id,
       },
     });
   };
 
-  const filtered = filter === 'all' ? items : items.filter(item => item.status === filter);
+  const scopedItems = params?.assetId ? items.filter(item => item.assetId === params.assetId) : items;
+  const filtered = filter === 'all' ? scopedItems : scopedItems.filter(item => item.status === filter);
   const columns: Column<EquipmentTest>[] = [
     { key: 'testType', header: 'Test', render: item => (
       <span className="capitalize text-xs">{humanize(item.discipline)} · {humanize(item.testType)}</span>
@@ -116,8 +119,14 @@ export default function TestingPage() {
     { key: 'nextDue', header: 'Next Due' },
     { key: 'testedBy', header: 'Tested By' },
     { key: 'results', header: 'Results', render: item => <span className="block max-w-[220px] truncate" title={item.results}>{item.results || '-'}</span> },
+    { key: 'followUpWorkOrderId', header: 'Work order', render: item => item.followUpWorkOrderId ? (
+      <button onClick={() => navigate('work-orders', { focusId: item.followUpWorkOrderId })}
+        className="text-blue-400 hover:text-blue-300 hover:underline text-xs">{item.followUpWorkOrderId}</button>
+    ) : <span className="text-slate-600">-</span> },
     { key: 'followUp', header: 'Follow-up', render: item => ['failed', 'attention'].includes(item.status) ? (
-      !canEdit
+      item.followUpWorkOrderId
+        ? <span className="text-xs text-green-400">Work order linked</span>
+        : !canEdit
         ? <span className="text-xs text-slate-500">Read only</span>
         : item.assetId
         ? <button onClick={() => raiseWorkOrder(item)} className="text-amber-300 hover:text-amber-200 underline text-xs">Raise corrective WO</button>
@@ -153,14 +162,14 @@ export default function TestingPage() {
         {(['all', 'failed', 'attention', 'pending', 'passed'] as const).map(status => (
           <button key={status} onClick={() => setFilter(status)}
             className={`px-4 py-2 rounded-lg text-sm border ${filter === status ? 'bg-blue-600/20 border-blue-500/30 text-blue-400' : 'bg-slate-800/50 border-slate-700/50 text-slate-400'}`}>
-            {status === 'all' ? 'All' : status} ({status === 'all' ? items.length : items.filter(item => item.status === status).length})
+            {status === 'all' ? 'All' : status} ({status === 'all' ? scopedItems.length : scopedItems.filter(item => item.status === status).length})
           </button>
         ))}
       </div>
       {loadError && <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">Could not load testing records. Refresh to try again.</p>}
       <DataTable data={filtered} columns={columns} onEdit={canEdit ? openEdit : undefined} onDelete={isAdmin ? remove : undefined}
         onAdd={canEdit ? openNew : undefined} searchPlaceholder="Search tests and assets..." emptyMessage="No testing records found."
-        canEdit={canEdit} canDelete={isAdmin} />
+        canEdit={canEdit} canDelete={isAdmin} initialSearch={params?.search ?? ''} highlightId={params?.focusId} />
       {showForm && (
         <Modal open onClose={() => setShowForm(false)} title={editItem ? 'Edit Test Record' : 'New Test Record'}>
           <div className="space-y-4">

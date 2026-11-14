@@ -112,17 +112,18 @@ export default function RootCauseAnalysisPage({ params }: { params?: NavParams }
   };
 
   const assetName = (id: string) => assets.find(asset => asset.id === id)?.name ?? id;
-  const openCount = useMemo(() => rows.filter(row => !['verified', 'closed'].includes(row.status)).length, [rows]);
-  const actionCount = useMemo(() => rows.filter(row => row.status === 'actions_in_progress').length, [rows]);
+  const visibleRows = params?.assetId ? rows.filter(row => row.assetId === params.assetId) : rows;
+  const openCount = useMemo(() => visibleRows.filter(row => !['verified', 'closed'].includes(row.status)).length, [visibleRows]);
+  const actionCount = useMemo(() => visibleRows.filter(row => row.status === 'actions_in_progress').length, [visibleRows]);
   const repeatCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const row of rows) {
+    for (const row of visibleRows) {
       if (!row.failureMode.trim()) continue;
       const key = `${row.assetId.toLowerCase()}|${row.failureMode.trim().toLowerCase()}`;
       counts[key] = (counts[key] ?? 0) + 1;
     }
     return counts;
-  }, [rows]);
+  }, [visibleRows]);
   const repeatedFailureModes = Object.values(repeatCounts).filter(count => count > 1).length;
   const columns: Column<RootCauseAnalysis>[] = [
     { key: 'failureMode', header: 'Failure', render: row => (
@@ -194,7 +195,7 @@ export default function RootCauseAnalysisPage({ params }: { params?: NavParams }
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
-          <div className="text-2xl font-bold text-amber-300">{rows.length}</div><div className="text-xs text-slate-400 mt-1">Total analyses</div>
+          <div className="text-2xl font-bold text-amber-300">{visibleRows.length}</div><div className="text-xs text-slate-400 mt-1">Total analyses</div>
         </div>
         <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4">
           <div className="text-2xl font-bold text-red-300">{openCount}</div><div className="text-xs text-slate-400 mt-1">Open / not yet verified</div>
@@ -216,9 +217,9 @@ export default function RootCauseAnalysisPage({ params }: { params?: NavParams }
         </p>
       </div>
 
-      <DataTable data={rows} columns={columns} onEdit={canEdit ? openEdit : undefined} onDelete={isAdmin ? remove : undefined}
+      <DataTable data={visibleRows} columns={columns} onEdit={canEdit ? openEdit : undefined} onDelete={isAdmin ? remove : undefined}
         searchPlaceholder="Search failures, assets, work orders..." emptyMessage="No root cause analyses recorded yet."
-        canEdit={canEdit} canDelete={isAdmin} />
+        canEdit={canEdit} canDelete={isAdmin} initialSearch={params?.search ?? ''} highlightId={params?.focusId} />
 
       {showForm && (
         <Modal open onClose={() => setShowForm(false)} title={editItem ? `Edit RCA: ${editItem.id}` : 'New Root Cause Analysis'}>

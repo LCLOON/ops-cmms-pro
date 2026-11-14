@@ -10,6 +10,7 @@ import { bandToAssetCriticality, type RiskBand } from '@/lib/criticality';
 
 interface WorkOrder {
   id: string; assetId: string; title: string; description: string;
+  siteId: string; pmScheduleId: string; sourceTestingRecordId: string; sourceInspectionId: string;
   type: string; priority: string; status: string; assignedTo: string;
   requestedBy: string; dueDate: string; completedDate: string;
   laborHours: number; partsCost: number; resolution: string;
@@ -18,9 +19,11 @@ interface WorkOrder {
 interface WoPart { id: number; workOrderId: string; inventoryItemId: string; inventoryName: string; partNumber: string; quantity: number; unitCost: number; }
 interface WoLabor { id: number; workOrderId: string; userId: number; username: string; hours: number; loggedDate: string; notes: string; }
 interface InventoryItem { id: string; name: string; partNumber: string; unitCost: number; }
+interface SiteOption { id: string; name: string; }
 
 const defaultWO: WorkOrder = {
-  id: '', assetId: '', title: '', description: '', type: 'corrective',
+  id: '', assetId: '', siteId: '', pmScheduleId: '', sourceTestingRecordId: '', sourceInspectionId: '',
+  title: '', description: '', type: 'corrective',
   priority: 'medium', status: 'open', assignedTo: '', requestedBy: '',
   dueDate: '', completedDate: '', laborHours: 0, partsCost: 0, resolution: '',
   createdAt: '', updatedAt: '',
@@ -43,7 +46,8 @@ const priorityColors: Record<string, string> = {
 export default function WorkOrderPage({ params }: { params?: NavParams }) {
   const { canEdit, loading: authLoading } = useAuth();
   const [items, setItems] = useState<WorkOrder[]>([]);
-  const [assets, setAssets] = useState<{ id: string; name: string }[]>([]);
+  const [assets, setAssets] = useState<{ id: string; name: string; siteId: string }[]>([]);
+  const [sites, setSites] = useState<SiteOption[]>([]);
   const [riskBands, setRiskBands] = useState<Record<string, RiskBand>>({});
   const [criticalityLoadFailed, setCriticalityLoadFailed] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -52,6 +56,9 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
   const [form, setForm] = useState<WorkOrder>(() => params?.workOrderDraft ? {
     ...defaultWO,
     assetId: params.assetId ?? '',
+    siteId: params.workOrderDraft.siteId ?? '',
+    sourceTestingRecordId: params.workOrderDraft.sourceTestingRecordId ?? '',
+    sourceInspectionId: params.workOrderDraft.sourceInspectionId ?? '',
     title: params.workOrderDraft.title,
     description: params.workOrderDraft.description,
     type: params.workOrderDraft.type ?? 'corrective',
@@ -66,8 +73,16 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
   // Asset names are needed for the link column and the form picker.
   useEffect(() => {
     fetch('/api/assets').then(r => r.json())
-      .then((rows: { id: string; name: string }[]) => { if (Array.isArray(rows)) setAssets(rows.map(a => ({ id: a.id, name: a.name }))); })
+      .then((rows: { id: string; name: string; siteId?: string }[]) => {
+        if (Array.isArray(rows)) setAssets(rows.map(a => ({ id: a.id, name: a.name, siteId: a.siteId ?? '' })));
+      })
       .catch(() => {});
+  }, []);
+  useEffect(() => {
+    fetch('/api/config?type=sites')
+      .then(response => { if (!response.ok) throw new Error(`Sites request failed (${response.status})`); return response.json(); })
+      .then(data => { if (Array.isArray(data.sites)) setSites(data.sites); })
+      .catch(error => console.error('[work-orders] Failed to load sites', error));
   }, []);
 
   useEffect(() => {
@@ -161,6 +176,7 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
       {showForm && (
         <Modal open={showForm} onClose={() => setShowForm(false)} title={editItem ? `Edit WO: ${editItem.id}` : 'New Work Order'}>
           <WOForm form={form} setForm={setForm} onSave={save} saving={saving} isEdit={!!editItem} assets={assets}
+            sites={sites}
             riskBands={riskBands} criticalityLoadFailed={criticalityLoadFailed} />
         </Modal>
       )}
@@ -168,13 +184,14 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
   );
 }
 
-function WOForm({ form, setForm, onSave, saving, isEdit, assets, riskBands, criticalityLoadFailed }: {
+function WOForm({ form, setForm, onSave, saving, isEdit, assets, sites, riskBands, criticalityLoadFailed }: {
   form: WorkOrder;
   setForm: (f: WorkOrder) => void;
   onSave: () => void;
   saving: boolean;
   isEdit: boolean;
-  assets: { id: string; name: string }[];
+  assets: { id: string; name: string; siteId: string }[];
+  sites: SiteOption[];
   riskBands: Record<string, RiskBand>;
   criticalityLoadFailed: boolean;
 }) {
@@ -249,7 +266,7 @@ function WOForm({ form, setForm, onSave, saving, isEdit, assets, riskBands, crit
             <div><label htmlFor="wo-asset" className="block text-xs text-slate-500 mb-1">Asset</label>
               <select id="wo-asset" value={form.assetId} onChange={e => {
                 const assetId = e.target.value;
-                const next = { ...form, assetId };
+                const next = { ...form, assetId, siteId: assets.find(asset => asset.id === assetId)?.siteId ?? '' };
                 if (!isEdit && !priorityOverridden) {
                   const band = riskBands[assetId];
                   next.priority = band ? bandToAssetCriticality(band) : 'medium';
@@ -259,6 +276,14 @@ function WOForm({ form, setForm, onSave, saving, isEdit, assets, riskBands, crit
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="">No asset (site level)</option>
                 {assets.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select></div>
+            <div><label htmlFor="wo-site" className="block text-xs text-slate-500 mb-1">Site</label>
+              <select id="wo-site" value={form.siteId || assets.find(asset => asset.id === form.assetId)?.siteId || ''}
+                disabled={Boolean(form.assetId && assets.find(asset => asset.id === form.assetId)?.siteId)}
+                onChange={e => update('siteId', e.target.value)}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">Unassigned</option>
+                {sites.map(site => <option key={site.id} value={site.id}>{site.name}</option>)}
               </select></div>
             {select('Type', 'type', ['corrective','preventive','predictive','emergency','inspection'])}
             {priorityField}

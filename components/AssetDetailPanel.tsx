@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Trash2, ClipboardList, CalendarCheck, ChevronRight } from 'lucide-react';
+import { Plus, Trash2, ClipboardList, CalendarCheck, ChevronRight, Activity, GitBranch } from 'lucide-react';
 import { navigate } from '@/lib/nav';
 import {
   AssetRecord, indexById, buildPath, statusColors, criticalityColors, warrantyDaysLeft,
@@ -14,6 +14,7 @@ interface WorkOrderLite {
 interface Props {
   asset: AssetRecord | null;
   assets: AssetRecord[];
+  sites: { id: string; name: string }[];
   canEdit: boolean;
   isAdmin: boolean;
   onSelect: (id: string) => void;
@@ -41,7 +42,7 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 export default function AssetDetailPanel({
-  asset, assets, canEdit, isAdmin, onSelect, onEdit, onAddChild, onDelete, onAddRoot,
+  asset, assets, sites, canEdit, isAdmin, onSelect, onEdit, onAddChild, onDelete, onAddRoot,
 }: Props) {
   const [workOrders, setWorkOrders] = useState<WorkOrderLite[]>([]);
   const byId = useMemo(() => indexById(assets), [assets]);
@@ -139,6 +140,14 @@ export default function AssetDetailPanel({
               title="Open the PM Schedule tab filtered to this asset">
               <CalendarCheck className="w-3.5 h-3.5" /> PM schedule
             </button>
+            <button onClick={() => navigate('testing', { assetId: asset.id })}
+              className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
+              <Activity className="w-3.5 h-3.5" /> Testing
+            </button>
+            <button onClick={() => navigate('root-cause-analysis', { assetId: asset.id })}
+              className="flex items-center gap-1 bg-slate-700 hover:bg-slate-600 text-slate-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
+              <GitBranch className="w-3.5 h-3.5" /> RCA
+            </button>
             {isAdmin && (
               <button onClick={() => onDelete(asset)}
                 className="flex items-center gap-1 text-red-400 hover:text-red-300 border border-red-500/30 hover:bg-red-500/10 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
@@ -151,6 +160,7 @@ export default function AssetDetailPanel({
 
       <div className="p-5 grid grid-cols-2 sm:grid-cols-3 gap-4 border-b border-slate-800">
         <Fact label="Category" value={<span className="capitalize">{asset.category}</span>} />
+        <Fact label="Site" value={sites.find(site => site.id === asset.siteId)?.name || asset.siteId || ''} />
         <Fact label="Location" value={asset.location} />
         <Fact label="Department" value={asset.department} />
         <Fact label="Manufacturer" value={asset.manufacturer} />

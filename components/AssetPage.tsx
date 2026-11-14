@@ -15,6 +15,7 @@ import { type NavParams } from '@/lib/nav';
 export default function AssetPage({ params }: { params?: NavParams }) {
   const { canEdit, isAdmin, loading: authLoading } = useAuth();
   const [assets, setAssets] = useState<AssetRecord[]>([]);
+  const [sites, setSites] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [editItem, setEditItem] = useState<AssetRecord | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -34,9 +35,20 @@ export default function AssetPage({ params }: { params?: NavParams }) {
   }, []);
 
   useEffect(() => { if (!authLoading) fetchAssets(); }, [authLoading, fetchAssets]);
+  useEffect(() => {
+    fetch('/api/config?type=sites')
+      .then(response => { if (!response.ok) throw new Error(`Sites request failed (${response.status})`); return response.json(); })
+      .then(data => { if (Array.isArray(data.sites)) setSites(data.sites); })
+      .catch(error => console.error('[assets] Failed to load sites', error));
+  }, []);
 
   // Presetting parentId is what makes "add equipment under this node" one click.
-  const openNew = (parentId = '') => { setForm(emptyAsset(parentId)); setEditItem(null); setShowForm(true); };
+  const openNew = (parentId = '') => {
+    const parent = assets.find(asset => asset.id === parentId);
+    setForm({ ...emptyAsset(parentId), siteId: parent?.siteId ?? '' });
+    setEditItem(null);
+    setShowForm(true);
+  };
   const openEdit = (item: AssetRecord) => { setForm({ ...item }); setEditItem(item); setShowForm(true); };
 
   const save = async () => {
@@ -69,6 +81,7 @@ export default function AssetPage({ params }: { params?: NavParams }) {
 
   const columns: Column<AssetRecord>[] = [
     { key: 'name', header: 'Name' },
+    { key: 'siteId', header: 'Site', render: a => a.siteId ? sites.find(site => site.id === a.siteId)?.name ?? a.siteId : <span className="text-slate-600">Unassigned</span> },
     { key: 'category', header: 'Category', render: a => <span className="capitalize">{a.category}</span> },
     { key: 'location', header: 'Location' },
     {
@@ -121,6 +134,7 @@ export default function AssetPage({ params }: { params?: NavParams }) {
             <AssetDetailPanel
               asset={selected}
               assets={assets}
+              sites={sites}
               canEdit={canEdit}
               isAdmin={isAdmin}
               onSelect={setSelectedId}
@@ -154,6 +168,7 @@ export default function AssetPage({ params }: { params?: NavParams }) {
             onCancel={() => setShowForm(false)}
             saving={saving}
             allAssets={assets}
+            sites={sites}
             isNew={!editItem}
           />
         </Modal>

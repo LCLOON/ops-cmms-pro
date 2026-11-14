@@ -7,6 +7,7 @@ export const loginSchema = z.object({
 });
 
 export const assetSchema = z.object({
+  siteId: z.string().default(''),
   name: z.string().min(1, 'Name required'),
   category: z.enum(['mechanical','electrical','hvac','plumbing','structural','vehicle','it','safety','other']),
   location: z.string().default(''),
@@ -34,6 +35,10 @@ export const assetSchema = z.object({
 
 export const workOrderSchema = z.object({
   assetId: z.string().default(''),
+  siteId: z.string().default(''),
+  pmScheduleId: z.string().default(''),
+  sourceTestingRecordId: z.string().default(''),
+  sourceInspectionId: z.string().default(''),
   title: z.string().min(1, 'Title required'),
   description: z.string().default(''),
   type: z.enum(['corrective','preventive','predictive','emergency','inspection']).default('corrective'),
@@ -81,6 +86,25 @@ export const equipmentTestSchema = z.object({
   testedBy: z.string().default(''),
   status: z.enum(['pending', 'passed', 'failed', 'attention']).default('pending'),
   notes: z.string().default(''),
+});
+
+export const inspectionSchema = z.object({
+  siteId: z.string().default(''),
+  assetId: z.string().default(''),
+  complianceObligationId: z.string().default(''),
+  inspectionType: z.enum(['visual','detailed','regulatory','dam_safety','fish_passage','substation','safety','other']).default('visual'),
+  title: z.string().min(1, 'Title required'),
+  description: z.string().default(''),
+  scheduledDate: z.string().default(''),
+  completedDate: z.string().default(''),
+  inspector: z.string().default(''),
+  findings: z.string().default(''),
+  recommendations: z.string().default(''),
+  correctiveActions: z.string().default(''),
+  readings: z.string().default(''),
+  photos: z.string().default(''),
+  status: z.enum(['scheduled','in_progress','completed','deficient','overdue']).default('scheduled'),
+  priority: z.enum(['critical','high','medium','low']).default('medium'),
 });
 
 export const rootCauseAnalysisSchema = z.object({

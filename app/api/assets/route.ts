@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { getAssets, upsertAsset, deleteAsset, getAsset, logAudit } from '@/lib/operations';
+import { getAssets, getSites, upsertAsset, deleteAsset, getAsset, logAudit } from '@/lib/operations';
 import { assetSchema } from '@/lib/validations';
 
 export async function GET() {
@@ -22,6 +22,9 @@ export async function POST(request: Request) {
     const body: unknown = await request.json();
     const parsed = assetSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });
+    if (parsed.data.siteId && !(await getSites()).some(site => site.id === parsed.data.siteId)) {
+      return NextResponse.json({ error: 'Site not found' }, { status: 400 });
+    }
 
     const requestedId = typeof body === 'object' && body !== null && 'id' in body ? body.id : undefined;
     const id = typeof requestedId === 'string' && requestedId.trim() ? requestedId : 'AST-' + Date.now().toString(36).toUpperCase();
@@ -53,6 +56,9 @@ export async function PUT(request: Request) {
 
     const parsed = assetSchema.safeParse(body);
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });
+    if (parsed.data.siteId && !(await getSites()).some(site => site.id === parsed.data.siteId)) {
+      return NextResponse.json({ error: 'Site not found' }, { status: 400 });
+    }
     const updated = { ...existing, ...parsed.data, id: existing.id, updatedAt: new Date().toISOString() };
     await upsertAsset(updated);
     await logAudit({

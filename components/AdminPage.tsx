@@ -9,6 +9,7 @@ interface Site { id: string; name: string; fercNo: string; capacityMw: string; r
 interface UserRow { id: number; username: string; display_name: string; role: string; active: number; force_password_change: number; last_login_at: string | null; }
 interface UserFormState { username: string; display_name: string; role: string; active: number; password: string; force_password_change: number; }
 interface AuditRow { id: number; timestamp: string; username: string; action: string; entityType: string; entityId: string; details: string; }
+interface OrgConfig { companyName: string; siteName: string; siteAddress: string; laborRate: number; }
 
 const defaultSite: Site = { id:'', name:'', fercNo:'', capacityMw:'', riverMile:0, yearBuilt:0, status:'operational', operator:'', riverSystem:'Kennebec River', county:'', state:'ME' };
 const defaultUser: UserFormState = { username: '', display_name: '', role: 'technician', active: 1, password: '', force_password_change: 1 };
@@ -25,6 +26,7 @@ export default function AdminPage() {
   const [showUserForm, setShowUserForm] = useState(false);
   const [userForm, setUserForm] = useState<UserFormState>(defaultUser);
   const [orgLaborRate, setOrgLaborRate] = useState(75);
+  const [orgConfig, setOrgConfig] = useState<OrgConfig>({ companyName: '', siteName: '', siteAddress: '', laborRate: 75 });
   const [savingOrg, setSavingOrg] = useState(false);
   const [orgSaved, setOrgSaved] = useState(false);
   const [audit, setAudit] = useState<AuditRow[]>([]);
@@ -36,7 +38,12 @@ export default function AdminPage() {
     fetch('/api/users').then(r => r.json()).then(d => { if (d.users) setUsers(d.users); }).catch(() => {}), []);
 
   const fetchOrg = useCallback(() =>
-    fetch('/api/config').then(r => r.json()).then(d => { if (d.config) setOrgLaborRate(d.config.laborRate ?? 75); }).catch(() => {}), []);
+    fetch('/api/config').then(r => r.json()).then(d => {
+      if (d.config) {
+        setOrgConfig(d.config);
+        setOrgLaborRate(d.config.laborRate ?? 75);
+      }
+    }).catch(() => {}), []);
 
   const fetchAudit = useCallback(() =>
     fetch('/api/audit?limit=50').then(r => r.json()).then(d => { if (d.entries) setAudit(d.entries); }).catch(() => {}), []);
@@ -111,10 +118,10 @@ export default function AdminPage() {
         <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
           <h3 className="text-sm font-semibold text-white mb-4">System Information</h3>
           <div className="space-y-3 text-sm">
-            <div className="flex justify-between"><span className="text-slate-500">Company</span><span className="text-slate-300">Kennebec Hydro Operations (KRRT)</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">River System</span><span className="text-slate-300">Kennebec River, Maine</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">Plants</span><span className="text-slate-300">4 (Lockwood, Hydro-Kennebec, Shawmut, Weston)</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">Total Capacity</span><span className="text-slate-300">~46.9 MW</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Company</span><span className="text-slate-300">{orgConfig.companyName || 'Not configured'}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Sites</span><span className="text-slate-300">{orgConfig.siteName || orgConfig.siteAddress || 'Not configured'}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Plants</span><span className="text-slate-300">{sites.length}</span></div>
+            <div className="flex justify-between"><span className="text-slate-500">Total Capacity</span><span className="text-slate-300">~{sites.reduce((total, site) => total + (Number.parseFloat(site.capacityMw) || 0), 0).toFixed(1)} MW</span></div>
             <div className="flex justify-between"><span className="text-slate-500">Database</span><span className="text-slate-300">SQLite (WAL mode)</span></div>
             <div className="flex justify-between"><span className="text-slate-500">Auth</span><span className="text-slate-300">JWT (HS256, 8hr sessions)</span></div>
             <div className="flex justify-between"><span className="text-slate-500">Users</span><span className="text-slate-300">{users.length} active</span></div>
@@ -140,6 +147,15 @@ export default function AdminPage() {
             <input id="labor-rate" type="number" min={0} step="0.5" value={orgLaborRate}
               onChange={e => { setOrgLaborRate(Number(e.target.value)); setOrgSaved(false); }}
               className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-white mb-1">Data Backup</h3>
+              <p className="text-xs text-slate-500">Download a complete JSON export of the application tables.</p>
+            </div>
+            <a href="/api/backup" className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+              Download backup
+            </a>
           </div>
           <button onClick={saveOrg} disabled={savingOrg}
             className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">

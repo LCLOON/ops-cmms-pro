@@ -13,6 +13,7 @@ interface Props {
   onCancel: () => void;
   saving: boolean;
   allAssets: AssetRecord[];
+  sites: { id: string; name: string }[];
   isNew: boolean;
 }
 
@@ -28,7 +29,7 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
-export default function AssetForm({ form, setForm, onSave, onCancel, saving, allAssets, isNew }: Props) {
+export default function AssetForm({ form, setForm, onSave, onCancel, saving, allAssets, sites, isNew }: Props) {
   const byId = useMemo(() => indexById(allAssets), [allAssets]);
 
   // A parent that is this asset or one of its own descendants would detach the
@@ -112,6 +113,13 @@ export default function AssetForm({ form, setForm, onSave, onCancel, saving, all
       </Section>
 
       <Section title="Where is it?">
+        <div>
+          <label htmlFor="asset-siteId" className="block text-xs text-slate-500 mb-1">Site</label>
+          <select id="asset-siteId" value={form.siteId ?? ''} onChange={e => set('siteId', e.target.value)} className={inputClass}>
+            <option value="">Unassigned</option>
+            {sites.map(site => <option key={site.id} value={site.id}>{site.name}</option>)}
+          </select>
+        </div>
         {text('Location', 'location', { placeholder: 'e.g. Forebay deck' })}
         {text('Department', 'department', { placeholder: 'e.g. Operations' })}
         {text('Area', 'area')}

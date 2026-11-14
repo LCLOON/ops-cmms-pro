@@ -109,8 +109,8 @@ export async function seedDatabase(): Promise<void> {
     db.prepare('UPDATE users SET force_password_change = 1 WHERE username IN (?, ?, ?, ?)').run('admin', 'manager', 'tech', 'viewer');
 
     // Assets
-    const insAsset = db.prepare(`INSERT INTO assets (id,name,category,location,department,manufacturer,model,serial_number,install_date,warranty_expiry,status,criticality,notes,parent_id,area,system,replacement_cost,failure_mode,is_component,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-    for (const a of SEED_ASSETS) insAsset.run(a.id, a.name, a.category, a.location, a.department, a.manufacturer, a.model, a.serialNumber, a.installDate, a.warrantyExpiry, a.status, a.criticality, a.notes, a.parentId, '', '', 0, '', 0, a.createdAt, a.updatedAt);
+    const insAsset = db.prepare(`INSERT INTO assets (id,site_id,name,category,location,department,manufacturer,model,serial_number,install_date,warranty_expiry,status,criticality,notes,parent_id,area,system,replacement_cost,failure_mode,is_component,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    for (const a of SEED_ASSETS) insAsset.run(a.id, a.siteId || null, a.name, a.category, a.location, a.department, a.manufacturer, a.model, a.serialNumber, a.installDate, a.warrantyExpiry, a.status, a.criticality, a.notes, a.parentId, '', '', 0, '', 0, a.createdAt, a.updatedAt);
 
     // Work Orders
     const insWO = db.prepare(`INSERT INTO work_orders (id,asset_id,title,description,type,priority,status,assigned_to,requested_by,due_date,completed_date,labor_hours,parts_cost,resolution,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -130,8 +130,20 @@ export async function seedDatabase(): Promise<void> {
       .run('Kennebec Hydro Operations', 'Kennebec River Hydro Projects', 'Lockwood | Hydro Kennebec | Shawmut | Weston — Kennebec River, ME', 'Mike Thornton', 'mthornton@kennebechydro.com', '(207) 555-0142');
 
     for (const a of hydro.assets) {
-      insAsset.run(a.assetId, a.name, a.category, a.location, a.department, a.manufacturer, a.model, a.serialNumber, a.installDate, '', a.status, a.criticality, '', a.parentId, a.area, a.system, 0, '', 0, nowIso(), nowIso());
+      insAsset.run(a.assetId, a.siteId || null, a.name, a.category, a.location, a.department, a.manufacturer, a.model, a.serialNumber, a.installDate, '', a.status, a.criticality, '', a.parentId, a.area, a.system, 0, '', 0, nowIso(), nowIso());
     }
+    db.prepare(`
+      WITH RECURSIVE asset_sites(asset_id, site_id) AS (
+        SELECT id, site_id FROM assets WHERE site_id IS NOT NULL
+        UNION
+        SELECT child.id, parent.site_id
+        FROM assets child
+        JOIN asset_sites parent ON child.parent_id = parent.asset_id
+      )
+      UPDATE assets
+      SET site_id = (SELECT asset_sites.site_id FROM asset_sites WHERE asset_sites.asset_id = assets.id LIMIT 1)
+      WHERE site_id IS NULL AND EXISTS (SELECT 1 FROM asset_sites WHERE asset_sites.asset_id = assets.id)
+    `).run();
 
     for (const p of hydro.pmSchedules) {
       insPM.run(p.pmId, p.assetId, p.title, p.description || '', p.frequencyType, p.frequencyValue, '', new Date().toISOString().slice(0,10), p.assignedTo, p.estimatedHours, 1, nowIso(), nowIso());
@@ -226,7 +238,7 @@ export async function changeUserPassword(userId: number, newPassword: string): P
 // ─── Assets ────────────────────────────────────────────────────
 function rowToAsset(r: Record<string, unknown>): Asset {
   return {
-    id: r.id as string, name: r.name as string, category: r.category as Asset['category'],
+    id: r.id as string, siteId: (r.site_id ?? '') as string, name: r.name as string, category: r.category as Asset['category'],
     location: r.location as string, department: r.department as string, manufacturer: r.manufacturer as string,
     model: r.model as string, serialNumber: r.serial_number as string, installDate: r.install_date as string,
     warrantyExpiry: r.warranty_expiry as string, status: r.status as Asset['status'],
@@ -252,11 +264,16 @@ export async function upsertAsset(asset: Asset): Promise<void> {
   // Prior status decides whether this save opens or closes a downtime interval.
   const priorRs = await db.execute({ sql: 'SELECT status FROM assets WHERE id = ?', args: [asset.id] });
   const prior = priorRs.rows[0] as unknown as { status: string } | undefined;
+  const parentRs = asset.parentId && !asset.siteId
+    ? await db.execute({ sql: 'SELECT site_id FROM assets WHERE id = ?', args: [asset.parentId] })
+    : { rows: [] };
+  const parentSiteId = (parentRs.rows[0] as unknown as { site_id?: string | null } | undefined)?.site_id;
+  const siteId = asset.siteId || parentSiteId || null;
 
-  await db.execute({ sql: `INSERT INTO assets (id,name,category,location,department,manufacturer,model,serial_number,install_date,warranty_expiry,status,criticality,notes,parent_id,area,system,replacement_cost,failure_mode,is_component,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name,category=excluded.category,location=excluded.location,department=excluded.department,manufacturer=excluded.manufacturer,model=excluded.model,serial_number=excluded.serial_number,install_date=excluded.install_date,warranty_expiry=excluded.warranty_expiry,status=excluded.status,criticality=excluded.criticality,notes=excluded.notes,parent_id=excluded.parent_id,area=excluded.area,system=excluded.system,replacement_cost=excluded.replacement_cost,failure_mode=excluded.failure_mode,is_component=excluded.is_component,updated_at=excluded.updated_at`,
-    args: [asset.id, asset.name, asset.category, asset.location, asset.department, asset.manufacturer, asset.model, asset.serialNumber, asset.installDate, asset.warrantyExpiry, asset.status, asset.criticality, asset.notes, asset.parentId || '', asset.area || '', asset.system || '', asset.replacementCost ?? 0, asset.failureMode ?? '', asset.isComponent ? 1 : 0] });
+  await db.execute({ sql: `INSERT INTO assets (id,site_id,name,category,location,department,manufacturer,model,serial_number,install_date,warranty_expiry,status,criticality,notes,parent_id,area,system,replacement_cost,failure_mode,is_component,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET site_id=excluded.site_id,name=excluded.name,category=excluded.category,location=excluded.location,department=excluded.department,manufacturer=excluded.manufacturer,model=excluded.model,serial_number=excluded.serial_number,install_date=excluded.install_date,warranty_expiry=excluded.warranty_expiry,status=excluded.status,criticality=excluded.criticality,notes=excluded.notes,parent_id=excluded.parent_id,area=excluded.area,system=excluded.system,replacement_cost=excluded.replacement_cost,failure_mode=excluded.failure_mode,is_component=excluded.is_component,updated_at=excluded.updated_at`,
+    args: [asset.id, siteId, asset.name, asset.category, asset.location, asset.department, asset.manufacturer, asset.model, asset.serialNumber, asset.installDate, asset.warrantyExpiry, asset.status, asset.criticality, asset.notes, asset.parentId || '', asset.area || '', asset.system || '', asset.replacementCost ?? 0, asset.failureMode ?? '', asset.isComponent ? 1 : 0] });
 
   await syncDowntime(asset.id, prior?.status, asset.status);
 }
@@ -363,6 +380,9 @@ export async function deleteAsset(id: string): Promise<void> {
 function rowToWorkOrder(r: Record<string, unknown>): WorkOrder {
   return {
     id: r.id as string, assetId: (r.asset_id ?? '') as string, title: r.title as string,
+    siteId: (r.site_id ?? '') as string, pmScheduleId: (r.pm_schedule_id ?? '') as string,
+    sourceTestingRecordId: (r.source_testing_record_id ?? '') as string,
+    sourceInspectionId: (r.source_inspection_id ?? '') as string,
     description: r.description as string, type: r.type as WorkOrder['type'],
     priority: r.priority as WorkOrder['priority'], status: r.status as WorkOrder['status'],
     assignedTo: r.assigned_to as string, requestedBy: r.requested_by as string,
@@ -390,13 +410,29 @@ export async function getWorkOrdersByAsset(assetId: string): Promise<WorkOrder[]
 
 export async function upsertWorkOrder(wo: WorkOrder): Promise<void> {
   const db = await getDb();
-  await db.execute({ sql: `INSERT INTO work_orders (id,asset_id,title,description,type,priority,status,assigned_to,requested_by,due_date,completed_date,labor_hours,parts_cost,resolution,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,title=excluded.title,description=excluded.description,type=excluded.type,priority=excluded.priority,status=excluded.status,assigned_to=excluded.assigned_to,requested_by=excluded.requested_by,due_date=excluded.due_date,completed_date=excluded.completed_date,resolution=excluded.resolution,updated_at=excluded.updated_at`,
-    args: [wo.id, wo.assetId || null, wo.title, wo.description, wo.type, wo.priority, wo.status, wo.assignedTo, wo.requestedBy, wo.dueDate, wo.completedDate, wo.laborHours, wo.partsCost, wo.resolution] });
+  const priorRs = await db.execute({ sql: 'SELECT status, type, asset_id FROM work_orders WHERE id = ?', args: [wo.id] });
+  const prior = priorRs.rows[0] as unknown as { status: string; type: string; asset_id: string | null } | undefined;
+  const assetRs = wo.assetId
+    ? await db.execute({ sql: 'SELECT site_id FROM assets WHERE id = ?', args: [wo.assetId] })
+    : { rows: [] };
+  const assetSiteId = (assetRs.rows[0] as unknown as { site_id: string | null } | undefined)?.site_id;
+  const siteId = assetSiteId || wo.siteId || null;
+
+  await db.execute({ sql: `INSERT INTO work_orders (id,asset_id,site_id,pm_schedule_id,source_testing_record_id,source_inspection_id,title,description,type,priority,status,assigned_to,requested_by,due_date,completed_date,labor_hours,parts_cost,resolution,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET asset_id=excluded.asset_id,site_id=excluded.site_id,pm_schedule_id=excluded.pm_schedule_id,source_testing_record_id=excluded.source_testing_record_id,source_inspection_id=excluded.source_inspection_id,title=excluded.title,description=excluded.description,type=excluded.type,priority=excluded.priority,status=excluded.status,assigned_to=excluded.assigned_to,requested_by=excluded.requested_by,due_date=excluded.due_date,completed_date=excluded.completed_date,resolution=excluded.resolution,updated_at=excluded.updated_at`,
+    args: [
+      wo.id, wo.assetId || null, siteId, wo.pmScheduleId || null, wo.sourceTestingRecordId || null,
+      wo.sourceInspectionId || null, wo.title, wo.description, wo.type, wo.priority, wo.status,
+      wo.assignedTo, wo.requestedBy, wo.dueDate, wo.completedDate, wo.laborHours, wo.partsCost, wo.resolution,
+    ] });
+  if (wo.status === 'completed' && prior?.status !== 'completed') await syncPmScheduleOnCompletion(wo.id);
   // The edit form can also mark a work order complete, so the return-to-service
   // rule has to apply on this path too, not just on the status transition route.
   if (wo.status === 'completed') await syncAssetStatusAfterCompletion(wo.assetId || null);
+  if (prior?.type === 'corrective' || prior?.type === 'emergency' || wo.type === 'corrective' || wo.type === 'emergency') {
+    await refreshCriticalityBands([prior?.asset_id, wo.assetId]);
+  }
 }
 
 // Returning an asset to service. Completing the last open work order for a
@@ -425,7 +461,11 @@ async function syncAssetStatusAfterCompletion(assetId: string | null): Promise<v
 }
 
 export async function deleteWorkOrder(id: string): Promise<void> {
-  await (await getDb()).execute({ sql: 'DELETE FROM work_orders WHERE id = ?', args: [id] });
+  const db = await getDb();
+  const rs = await db.execute({ sql: 'SELECT asset_id, type FROM work_orders WHERE id = ?', args: [id] });
+  const row = rs.rows[0] as unknown as { asset_id: string | null; type: string } | undefined;
+  await db.execute({ sql: 'DELETE FROM work_orders WHERE id = ?', args: [id] });
+  if (row?.type === 'corrective' || row?.type === 'emergency') await refreshCriticalityBands([row.asset_id]);
 }
 
 // ─── PM Schedules ──────────────────────────────────────────────
@@ -449,7 +489,7 @@ export async function getPmSchedules(): Promise<PmSchedule[]> {
       COALESCE(s.name, p.name) as site_name
     FROM pm_schedules pm
     LEFT JOIN assets a ON pm.asset_id = a.id
-    LEFT JOIN sites s ON a.parent_id = s.id
+    LEFT JOIN sites s ON a.site_id = s.id
     LEFT JOIN assets p ON a.parent_id = p.id AND p.is_component = 0
     ORDER BY pm.next_due
   `);
@@ -758,8 +798,8 @@ export function getValidStatusTransitions(status: string): string[] {
 
 export async function transitionWorkOrderStatus(id: string, newStatus: string): Promise<{ ok: boolean; error?: string }> {
   const db = await getDb();
-  const rs = await db.execute({ sql: 'SELECT status FROM work_orders WHERE id = ?', args: [id] });
-  const wo = rs.rows[0] as unknown as { status: string } | undefined;
+  const rs = await db.execute({ sql: 'SELECT status, pm_schedule_id, asset_id, type FROM work_orders WHERE id = ?', args: [id] });
+  const wo = rs.rows[0] as unknown as { status: string; pm_schedule_id: string | null; asset_id: string | null; type: string } | undefined;
   if (!wo) return { ok: false, error: 'Work order not found' };
   const valid = VALID_TRANSITIONS[wo.status] || [];
   if (!valid.includes(newStatus)) return { ok: false, error: 'Invalid status transition' };
@@ -774,10 +814,10 @@ export async function transitionWorkOrderStatus(id: string, newStatus: string): 
     await db.execute({ sql: 'UPDATE work_orders SET status = ?, updated_at = ? WHERE id = ?', args: [newStatus, now, id] });
   }
   if (newStatus === 'completed') {
-    const assetRs = await db.execute({ sql: 'SELECT asset_id FROM work_orders WHERE id = ?', args: [id] });
-    const assetRow = assetRs.rows[0] as unknown as { asset_id: string | null } | undefined;
-    await syncAssetStatusAfterCompletion(assetRow?.asset_id || null);
+    await syncPmScheduleOnCompletion(id);
+    await syncAssetStatusAfterCompletion(wo.asset_id || null);
   }
+  if (wo.type === 'corrective' || wo.type === 'emergency') await refreshCriticalityBands([wo.asset_id]);
   return { ok: true };
 }
 
@@ -788,20 +828,43 @@ export async function generateWorkOrderFromPm(pmId: string, userId: number, user
   const pm = rs.rows[0] as unknown as Record<string, unknown> | undefined;
   if (!pm) return null;
 
+  const active = await db.execute({
+    sql: "SELECT id FROM work_orders WHERE pm_schedule_id = ? AND status IN ('open','in_progress','on_hold') ORDER BY created_at DESC LIMIT 1",
+    args: [pmId],
+  });
+  if (active.rows[0]) return (active.rows[0] as unknown as { id: string }).id;
+
   const woId = 'WO-' + Date.now().toString(36).toUpperCase();
   const now = new Date().toISOString();
-  await db.execute({ sql: `INSERT INTO work_orders (id, asset_id, title, description, type, priority, status, assigned_to, requested_by, due_date, created_at, updated_at)
-    VALUES (?,?,?,?,'preventive','medium','open',?,?,?,?,?)`,
-    args: [woId, pm.asset_id as string | null, pm.title as string, (pm.description as string) || 'Generated from PM schedule', pm.assigned_to as string, username, pm.next_due as string, now, now] });
+  const assetRs = pm.asset_id
+    ? await db.execute({ sql: 'SELECT site_id FROM assets WHERE id = ?', args: [pm.asset_id as string] })
+    : { rows: [] };
+  const siteId = (assetRs.rows[0] as unknown as { site_id: string | null } | undefined)?.site_id ?? null;
+  await db.execute({ sql: `INSERT INTO work_orders (id,asset_id,site_id,pm_schedule_id,title,description,type,priority,status,assigned_to,requested_by,due_date,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,'preventive','medium','open',?,?,?,?,?)`,
+    args: [woId, pm.asset_id as string | null, siteId, pmId, pm.title as string, (pm.description as string) || 'Generated from PM schedule', pm.assigned_to as string, username, pm.next_due as string, now, now] });
 
   const procedureId = (pm.procedure_id as string) || '';
   if (procedureId) await applyProcedureToWorkOrder(woId, procedureId, username);
 
-  // Update PM: set last_completed = today, recalculate next_due
-  const nextDue = await calcNextDue(pm.frequency_type as string, pm.frequency_value as number);
-  await db.execute({ sql: "UPDATE pm_schedules SET last_completed = date('now'), next_due = ?, updated_at = ? WHERE id = ?", args: [nextDue, now, pmId] });
-
   return woId;
+}
+
+async function syncPmScheduleOnCompletion(workOrderId: string): Promise<void> {
+  const db = await getDb();
+  const rs = await db.execute({
+    sql: `SELECT pm.id, pm.frequency_type, pm.frequency_value
+      FROM work_orders wo JOIN pm_schedules pm ON pm.id = wo.pm_schedule_id
+      WHERE wo.id = ?`,
+    args: [workOrderId],
+  });
+  const pm = rs.rows[0] as unknown as { id: string; frequency_type: string; frequency_value: number } | undefined;
+  if (!pm) return;
+  const nextDue = await calcNextDue(pm.frequency_type, pm.frequency_value);
+  await db.execute({
+    sql: "UPDATE pm_schedules SET last_completed = date('now'), next_due = ?, updated_at = datetime('now') WHERE id = ?",
+    args: [nextDue, pm.id],
+  });
 }
 
 async function calcNextDue(freqType: string, freqValue: number): Promise<string> {
@@ -854,6 +917,11 @@ export async function generateDueWorkOrders(userId: number, username: string): P
 
   for (const pmId of dueIds) {
     try {
+      const active = await db.execute({
+        sql: "SELECT id FROM work_orders WHERE pm_schedule_id = ? AND status IN ('open','in_progress','on_hold') LIMIT 1",
+        args: [pmId],
+      });
+      if (active.rows.length > 0) continue;
       const workOrderId = await generateWorkOrderFromPm(pmId, userId, username);
       if (workOrderId) generated.push({ pmId, workOrderId });
       else errors.push({ pmId, error: 'PM schedule not found' });
@@ -1006,6 +1074,22 @@ export async function upsertCriticality(
 
   const all = await getCriticalityRegister();
   return all.find(r => r.assetId === assetId) ?? null;
+}
+
+async function refreshCriticalityBands(assetIds: (string | null | undefined)[]): Promise<void> {
+  const targets = new Set(assetIds.filter((id): id is string => Boolean(id)));
+  if (targets.size === 0) return;
+  const rows = await getCriticalityRegister();
+  const db = await getDb();
+  for (const row of rows) {
+    if (!targets.has(row.assetId) || !row.assessed) continue;
+    const criticality = bandToAssetCriticality(row.result.band);
+    if (row.legacyCriticality === criticality) continue;
+    await db.execute({
+      sql: "UPDATE assets SET criticality = ?, updated_at = datetime('now') WHERE id = ?",
+      args: [criticality, row.assetId],
+    });
+  }
 }
 
 function clampInt(v: unknown, lo: number, hi: number): number {
@@ -1322,10 +1406,22 @@ export async function getAnalytics(): Promise<AnalyticsData> {
 
   // Failure-mode Pareto: which failure modes actually drive corrective work.
   const failureModes = ((await db.execute(`
-    SELECT COALESCE(NULLIF(a.failure_mode, ''), 'Unclassified') as failureMode, COUNT(*) as count
-    FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
-    WHERE w.type IN ('corrective','emergency')
-    GROUP BY failureMode ORDER BY count DESC LIMIT 12
+    WITH failure_events AS (
+      SELECT w.id AS event_id,
+        COALESCE(
+          NULLIF((SELECT r.failure_mode FROM root_cause_analyses r
+            WHERE r.work_order_id = w.id ORDER BY r.created_at DESC LIMIT 1), ''),
+          NULLIF(a.failure_mode, ''),
+          'Unclassified'
+        ) AS failure_mode
+      FROM work_orders w LEFT JOIN assets a ON w.asset_id = a.id
+      WHERE w.type IN ('corrective','emergency')
+      UNION ALL
+      SELECT r.id AS event_id, COALESCE(NULLIF(r.failure_mode, ''), 'Unclassified')
+      FROM root_cause_analyses r WHERE r.work_order_id IS NULL
+    )
+    SELECT failure_mode AS failureMode, COUNT(*) AS count
+    FROM failure_events GROUP BY failure_mode ORDER BY count DESC LIMIT 12
   `)).rows as unknown as { failureMode: string; count: number }[]);
 
   // Replace-vs-repair: cumulative maintenance cost against replacement cost.
@@ -1458,10 +1554,15 @@ export async function upsertComplianceObligation(o: ComplianceObligation): Promi
 
 // ─── Inspections ───────────────────────────────────────────────
 export async function getInspections(): Promise<Inspection[]> {
-  const rs = await (await getDb()).execute('SELECT * FROM inspections ORDER BY scheduled_date DESC');
+  const rs = await (await getDb()).execute(`
+    SELECT i.*,
+      (SELECT wo.id FROM work_orders wo WHERE wo.source_inspection_id = i.id ORDER BY wo.created_at DESC LIMIT 1) AS work_order_id
+    FROM inspections i ORDER BY i.scheduled_date DESC
+  `);
   return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
-    id: r.id as string, assetId: (r.asset_id ?? '') as string,
+    id: r.id as string, siteId: (r.site_id ?? '') as string, assetId: (r.asset_id ?? '') as string,
     complianceObligationId: (r.compliance_obligation_id ?? '') as string,
+    workOrderId: (r.work_order_id ?? '') as string,
     inspectionType: r.inspection_type as Inspection['inspectionType'],
     title: r.title as string, description: r.description as string,
     scheduledDate: r.scheduled_date as string, completedDate: r.completed_date as string,
@@ -1475,10 +1576,18 @@ export async function getInspections(): Promise<Inspection[]> {
 }
 
 export async function upsertInspection(i: Inspection): Promise<void> {
-  await (await getDb()).execute({ sql: `INSERT INTO inspections (id,asset_id,compliance_obligation_id,inspection_type,title,description,scheduled_date,completed_date,inspector,findings,recommendations,corrective_actions,readings,photos,status,priority,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET inspection_type=excluded.inspection_type,title=excluded.title,description=excluded.description,scheduled_date=excluded.scheduled_date,completed_date=excluded.completed_date,inspector=excluded.inspector,findings=excluded.findings,recommendations=excluded.recommendations,corrective_actions=excluded.corrective_actions,readings=excluded.readings,photos=excluded.photos,status=excluded.status,priority=excluded.priority,updated_at=excluded.updated_at`,
-    args: [str(i.id), str(i.assetId) || null, str(i.complianceObligationId) || null, str(i.inspectionType) || 'visual', str(i.title), str(i.description), str(i.scheduledDate), str(i.completedDate), str(i.inspector), str(i.findings), str(i.recommendations), str(i.correctiveActions), str(i.readings), str(i.photos), str(i.status) || 'scheduled', str(i.priority) || 'medium'] });
+  const db = await getDb();
+  const [assetRs, obligationRs] = await Promise.all([
+    i.assetId ? db.execute({ sql: 'SELECT site_id FROM assets WHERE id = ?', args: [i.assetId] }) : Promise.resolve({ rows: [] }),
+    i.complianceObligationId ? db.execute({ sql: 'SELECT site_id FROM compliance_obligations WHERE id = ?', args: [i.complianceObligationId] }) : Promise.resolve({ rows: [] }),
+  ]);
+  const assetSiteId = (assetRs.rows[0] as unknown as { site_id?: string | null } | undefined)?.site_id;
+  const obligationSiteId = (obligationRs.rows[0] as unknown as { site_id?: string | null } | undefined)?.site_id;
+  const siteId = assetSiteId || obligationSiteId || i.siteId || null;
+  await db.execute({ sql: `INSERT INTO inspections (id,site_id,asset_id,compliance_obligation_id,inspection_type,title,description,scheduled_date,completed_date,inspector,findings,recommendations,corrective_actions,readings,photos,status,priority,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET site_id=excluded.site_id,asset_id=excluded.asset_id,compliance_obligation_id=excluded.compliance_obligation_id,inspection_type=excluded.inspection_type,title=excluded.title,description=excluded.description,scheduled_date=excluded.scheduled_date,completed_date=excluded.completed_date,inspector=excluded.inspector,findings=excluded.findings,recommendations=excluded.recommendations,corrective_actions=excluded.corrective_actions,readings=excluded.readings,photos=excluded.photos,status=excluded.status,priority=excluded.priority,updated_at=excluded.updated_at`,
+    args: [str(i.id), siteId, str(i.assetId) || null, str(i.complianceObligationId) || null, str(i.inspectionType) || 'visual', str(i.title), str(i.description), str(i.scheduledDate), str(i.completedDate), str(i.inspector), str(i.findings), str(i.recommendations), str(i.correctiveActions), str(i.readings), str(i.photos), str(i.status) || 'scheduled', str(i.priority) || 'medium'] });
 }
 
 // ─── Documents ─────────────────────────────────────────────────
@@ -1528,9 +1637,14 @@ export async function upsertSafetyPermit(s: SafetyPermit): Promise<void> {
 
 // ─── Equipment Testing ─────────────────────────────────────────
 export async function getTestingRecords(): Promise<EquipmentTest[]> {
-  const rs = await (await getDb()).execute('SELECT * FROM testing_records ORDER BY test_date DESC');
+  const rs = await (await getDb()).execute(`
+    SELECT t.*,
+      (SELECT wo.id FROM work_orders wo WHERE wo.source_testing_record_id = t.id ORDER BY wo.created_at DESC LIMIT 1) AS follow_up_work_order_id
+    FROM testing_records t ORDER BY t.test_date DESC
+  `);
   return (rs.rows as unknown as Record<string, unknown>[]).map(r => ({
     id: r.id as string, assetId: (r.asset_id ?? '') as string,
+    followUpWorkOrderId: (r.follow_up_work_order_id ?? '') as string,
     discipline: r.discipline as EquipmentTest['discipline'],
     testType: r.test_type as EquipmentTest['testType'],
     testDate: r.test_date as string, results: r.results as string,

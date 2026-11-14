@@ -131,10 +131,22 @@ test('assessed asset suggests work-order priority but the user can override it',
 });
 
 test('failed mechanical test carries its evidence into a corrective work order', async ({ page }) => {
+  let submittedWorkOrder: Record<string, unknown> | undefined;
   await page.route('**/api/assets', route => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify([{ id: 'TEST-ASSET-M', name: 'Test Pump' }]),
+    body: JSON.stringify([{ id: 'TEST-ASSET-M', name: 'Test Pump', siteId: 'SITE-TEST' }]),
   }));
+  await page.route('**/api/config*', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ sites: [{ id: 'SITE-TEST', name: 'Test Site' }] }),
+  }));
+  await page.route('**/api/work-orders', async route => {
+    if (route.request().method() === 'POST') {
+      submittedWorkOrder = route.request().postDataJSON();
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ id: 'WO-TEST-1' }) });
+    } else {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify([]) });
+    }
+  });
   await page.route('**/api/electrical-tests', route => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify([{
@@ -156,8 +168,160 @@ test('failed mechanical test carries its evidence into a corrective work order',
   await expect(modal.getByRole('heading', { name: 'New Work Order' })).toBeVisible();
   await expect(modal.getByLabel('Asset')).toHaveValue('TEST-ASSET-M');
   await expect(modal.getByLabel('Title')).toHaveValue('Investigate vibration analysis test failed');
+  await expect(modal.getByLabel('Site')).toHaveValue('SITE-TEST');
   await expect(modal.getByLabel('Priority')).toHaveValue('high');
   await expect(modal.locator('textarea').first()).toHaveValue(/High axial vibration/);
+  await modal.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => submittedWorkOrder).toBeDefined();
+  expect(submittedWorkOrder?.sourceTestingRecordId).toBe('TEST-FAILED-1');
+  expect(submittedWorkOrder?.siteId).toBe('SITE-TEST');
+});
+
+test('deficient inspection hands off its site and evidence to a corrective work order', async ({ page }) => {
+  let submittedWorkOrder: Record<string, unknown> | undefined;
+  await page.route('**/api/assets', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{ id: 'INSPECT-ASSET', name: 'Intake Gate', siteId: 'SITE-INSPECT' }]),
+  }));
+  await page.route('**/api/config*', route => route.fulfill({
+    contentType: 'application/json', body: JSON.stringify({ sites: [{ id: 'SITE-INSPECT', name: 'Intake Site' }] }),
+  }));
+  await page.route('**/api/compliance', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{ id: 'COMP-INSPECT', siteId: 'SITE-INSPECT', title: 'Annual gate inspection' }]),
+  }));
+  await page.route('**/api/inspections', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      id: 'INSP-DEFICIENT', siteId: 'SITE-INSPECT', assetId: 'INSPECT-ASSET',
+      complianceObligationId: 'COMP-INSPECT', workOrderId: '', inspectionType: 'detailed',
+      title: 'Intake gate inspection', description: '', scheduledDate: '2026-11-13',
+      completedDate: '2026-11-13', inspector: 'Technician', findings: 'Gate binding during travel',
+      recommendations: 'Inspect actuator and guides', correctiveActions: 'Repair required',
+      readings: '', photos: '', status: 'deficient', priority: 'high',
+    }]),
+  }));
+  await page.route('**/api/work-orders', async route => {
+    if (route.request().method() === 'POST') {
+      submittedWorkOrder = route.request().postDataJSON();
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ id: 'WO-INSPECT-1' }) });
+    } else {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify([]) });
+    }
+  });
+
+  await openApp(page);
+  await page.getByRole('navigation').getByRole('button', { name: 'Inspections', exact: true }).click();
+  await expect(page.getByText('Intake Site')).toBeVisible();
+  await expect(page.getByText('Annual gate inspection')).toBeVisible();
+  await page.getByRole('button', { name: 'Raise corrective WO' }).click();
+
+  const modal = page.locator('div.fixed.inset-0.z-50');
+  await expect(modal.getByRole('heading', { name: 'New Work Order' })).toBeVisible();
+  await expect(modal.getByLabel('Asset')).toHaveValue('INSPECT-ASSET');
+  await expect(modal.getByLabel('Site')).toHaveValue('SITE-INSPECT');
+  await expect(modal.locator('textarea').first()).toHaveValue(/Gate binding during travel/);
+  await modal.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect.poll(() => submittedWorkOrder).toBeDefined();
+  expect(submittedWorkOrder?.sourceInspectionId).toBe('INSP-DEFICIENT');
+  expect(submittedWorkOrder?.siteId).toBe('SITE-INSPECT');
+});
+
+test('global search opens testing and root-cause records by their IDs', async ({ page }) => {
+  await page.route('**/api/assets', route => route.fulfill({ contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/work-orders', route => route.fulfill({ contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/pm-tasks', route => route.fulfill({ contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/electrical-tests', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      id: 'TEST-SEARCH-1', assetId: '', discipline: 'mechanical', testType: 'vibration_analysis',
+      testDate: '2026-11-13', results: 'Elevated vibration', nextDue: '', testedBy: 'Technician',
+      status: 'failed', notes: '',
+    }]),
+  }));
+  await page.route('**/api/root-cause-analyses', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      id: 'RCA-SEARCH-1', assetId: '', workOrderId: '', failureDate: '2026-11-13',
+      failureMode: 'Bearing wear', symptoms: 'Rising vibration', causeCategory: 'maintenance',
+      rootCause: 'Lubrication breakdown', contributingFactors: '', correctiveAction: '',
+      preventiveAction: '', actionOwner: '', dueDate: '', status: 'open',
+      createdBy: 'Technician', createdAt: '', updatedAt: '',
+    }]),
+  }));
+
+  await openApp(page);
+  await page.getByRole('button', { name: /Search/ }).first().click();
+  const search = page.getByPlaceholder(/Search assets, work orders, PMs, tests, RCAs/);
+  await search.fill('vibration');
+  await page.getByRole('button', { name: /Testing.*vibration_analysis/ }).click();
+  await expect(page.locator('[data-row-id="TEST-SEARCH-1"]')).toBeVisible();
+
+  await page.getByRole('button', { name: /Search/ }).first().click();
+  await page.getByPlaceholder(/Search assets, work orders, PMs, tests, RCAs/).fill('Bearing wear');
+  await page.getByRole('button', { name: /RCA.*Bearing wear/ }).click();
+  await expect(page.locator('[data-row-id="RCA-SEARCH-1"]')).toBeVisible();
+});
+
+test('PM schedule advances only when its generated work order is completed', async ({ page }) => {
+  await openApp(page);
+  const assetsResponse = await page.request.get('/api/assets');
+  expect(assetsResponse.ok()).toBeTruthy();
+  const assets: { id: string; status: string }[] = await assetsResponse.json();
+  const asset = assets.find(candidate => candidate.status === 'operational');
+  expect(asset, 'an operational asset is required for this workflow test').toBeDefined();
+  if (!asset) return;
+
+  const pmId = `PM-E2E-${Date.now()}`;
+  let workOrderId = '';
+  try {
+    const createResponse = await page.request.post('/api/pm-tasks', {
+      data: {
+        id: pmId, assetId: asset.id, title: 'E2E PM completion timing',
+        frequencyType: 'monthly', frequencyValue: 1, nextDue: '2000-01-01', active: true,
+      },
+    });
+    expect(createResponse.ok()).toBeTruthy();
+
+    const generateResponse = await page.request.post('/api/pm-tasks/generate', { data: { pmId } });
+    expect(generateResponse.ok()).toBeTruthy();
+    workOrderId = (await generateResponse.json()).workOrderId;
+    expect(workOrderId).toBeTruthy();
+
+    const pendingSchedules: { id: string; nextDue: string; lastCompleted: string }[] = await (await page.request.get('/api/pm-tasks')).json();
+    const pendingSchedule = pendingSchedules.find(schedule => schedule.id === pmId);
+    expect(pendingSchedule?.nextDue).toBe('2000-01-01');
+    expect(pendingSchedule?.lastCompleted).toBe('');
+
+    expect((await page.request.post('/api/work-orders/transition', { data: { id: workOrderId, status: 'in_progress' } })).ok()).toBeTruthy();
+    expect((await page.request.post('/api/work-orders/transition', { data: { id: workOrderId, status: 'completed' } })).ok()).toBeTruthy();
+
+    const completedSchedules: { id: string; nextDue: string; lastCompleted: string }[] = await (await page.request.get('/api/pm-tasks')).json();
+    const completedSchedule = completedSchedules.find(schedule => schedule.id === pmId);
+    expect(completedSchedule?.lastCompleted).not.toBe('');
+    expect(completedSchedule?.nextDue).not.toBe('2000-01-01');
+  } finally {
+    if (workOrderId) await page.request.delete('/api/work-orders', { data: { id: workOrderId } });
+    await page.request.delete('/api/pm-tasks', { data: { id: pmId } });
+  }
+});
+
+test('admin backup contains the complete application table manifest', async ({ page }) => {
+  await openApp(page);
+  const response = await page.request.get('/api/backup');
+  expect(response.ok()).toBeTruthy();
+  const backup: { version: string; tables: string[]; data: Record<string, unknown[]> } = await response.json();
+  const expectedTables = [
+    'users', 'site_config', 'assets', 'work_orders', 'pm_schedules', 'inventory',
+    'vendors', 'purchase_orders', 'po_items', 'wo_parts', 'wo_labor', 'meter_readings',
+    'audit_log', 'sites', 'compliance_obligations', 'inspections', 'documents',
+    'safety_permits', 'testing_records', 'root_cause_analyses', 'procedures',
+    'procedure_steps', 'procedure_revisions', 'wo_checklist_items', 'asset_downtime',
+    'asset_criticality',
+  ];
+  expect(backup.version).toBe('2.0');
+  expect(backup.tables).toEqual(expectedTables);
+  expect(Object.keys(backup.data).sort()).toEqual([...expectedTables].sort());
 });
 
 test('root cause analysis opens pre-linked from a work order', async ({ page }) => {

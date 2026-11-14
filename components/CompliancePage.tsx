@@ -7,14 +7,14 @@ import Modal from './Modal';
 
 interface Item { id: string; siteId: string; obligationType: string; title: string; description: string; regulationRef: string; frequency: string; lastCompleted: string; nextDue: string; ownerRole: string; evidenceRequired: string; status: string; priority: string; notes: string; }
 
-const defaultItem: Item = { id:'',siteId:'SITE-LOCK',obligationType:'dam_safety',title:'',description:'',regulationRef:'',frequency:'annual',lastCompleted:'',nextDue:'',ownerRole:'',evidenceRequired:'',status:'open',priority:'high',notes:'' };
+const defaultItem: Item = { id:'',siteId:'',obligationType:'dam_safety',title:'',description:'',regulationRef:'',frequency:'annual',lastCompleted:'',nextDue:'',ownerRole:'',evidenceRequired:'',status:'open',priority:'high',notes:'' };
 const typeLabels: Record<string,string> = { dam_safety:'Dam Safety',ferc_license:'FERC License',fish_passage:'Fish Passage',environmental:'Environmental',water_quality:'Water Quality',public_safety:'Public Safety',eap:'EAP',dssmp:'DSSMP',nerc:'NERC',ot_cyber:'OT/Cyber',other:'Other' };
 const sc: Record<string,string> = { open:'bg-blue-500/20 text-blue-400',in_progress:'bg-amber-500/20 text-amber-400',completed:'bg-green-500/20 text-green-400',overdue:'bg-red-500/20 text-red-400',waived:'bg-slate-500/20 text-slate-400' };
-const siteNames: Record<string,string> = { 'SITE-LOCK':'Lockwood','SITE-KENN':'Hydro-Kennebec','SITE-SHAW':'Shawmut','SITE-WEST':'Weston' };
 
 export default function CompliancePage() {
   const { canEdit, isAdmin } = useAuth();
   const [items, setItems] = useState<Item[]>([]);
+  const [sites, setSites] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editItem, setEditItem] = useState<Item | null>(null);
@@ -24,8 +24,14 @@ export default function CompliancePage() {
 
   const fetchItems = useCallback(() => { fetch('/api/compliance').then(r => r.json()).then(setItems).catch(() => {}).finally(() => setLoading(false)); }, []);
   useEffect(() => { fetchItems(); }, [fetchItems]);
+  useEffect(() => {
+    fetch('/api/config?type=sites')
+      .then(response => { if (!response.ok) throw new Error(`Sites request failed (${response.status})`); return response.json(); })
+      .then(data => { if (Array.isArray(data.sites)) setSites(data.sites); })
+      .catch(error => console.error('[compliance] Failed to load sites', error));
+  }, []);
 
-  const openNew = () => { setForm(defaultItem); setEditItem(null); setShowForm(true); };
+  const openNew = () => { setForm({ ...defaultItem, siteId: sites[0]?.id ?? '' }); setEditItem(null); setShowForm(true); };
   const openEdit = (item: Item) => { setForm({...item}); setEditItem(item); setShowForm(true); };
   const save = async () => { setSaving(true); try { const r = await fetch('/api/compliance', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(form) }); if(!r.ok){ alert((await r.json()).error); return; } setShowForm(false); fetchItems(); } finally { setSaving(false); } };
   const remove = async (item: Item) => { if(!confirm('Delete "'+item.title+'"?')) return; await fetch('/api/compliance', { method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:item.id}) }); fetchItems(); };
@@ -38,7 +44,7 @@ export default function CompliancePage() {
   const columns: Column<Item>[] = [
     { key:'title', header:'Obligation' },
     { key:'obligationType', header:'Type', render: o => <span className="text-xs">{typeLabels[o.obligationType]||o.obligationType}</span> },
-    { key:'siteId', header:'Site', render: o => <span className="text-xs">{siteNames[o.siteId]||o.siteId}</span> },
+    { key:'siteId', header:'Site', render: o => <span className="text-xs">{sites.find(site => site.id === o.siteId)?.name || o.siteId || 'Unassigned'}</span> },
     { key:'status', header:'Status', render: o => <span className={'inline-flex px-2 py-0.5 rounded-full text-xs font-medium border '+(sc[o.status]||'')}>{o.status.replace(/_/g,' ')}</span> },
     { key:'priority', header:'Priority' },
     { key:'nextDue', header:'Next Due' },
@@ -62,7 +68,7 @@ export default function CompliancePage() {
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             {f('Title','title')}
-            {sl('Site','siteId',['SITE-LOCK','SITE-KENN','SITE-SHAW','SITE-WEST'])}
+            {sl('Site','siteId',sites.map(site => site.id))}
             {sl('Type','obligationType',Object.keys(typeLabels))}
             {sl('Frequency','frequency',['daily','weekly','monthly','quarterly','semi_annual','annual','5-year','seasonal','as-needed'])}
             {f('Next Due','nextDue','date')}

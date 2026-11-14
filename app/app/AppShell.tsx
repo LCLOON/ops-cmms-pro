@@ -76,6 +76,8 @@ export default function AppShell() {
             if (r.type === 'Asset') navigate('assets', { focusId: r.id });
             else if (r.type === 'WO') navigate('work-orders', { focusId: r.id });
             else if (r.type === 'PM') navigate('pm-schedule', { focusId: r.id });
+            else if (r.type === 'Testing') navigate('testing', { focusId: r.id });
+            else if (r.type === 'RCA') navigate('root-cause-analysis', { focusId: r.id });
           }} />
         </div>
         <div className="lg:hidden flex items-center gap-3 p-4 border-b border-slate-800">
@@ -96,10 +98,10 @@ export default function AppShell() {
           {page === 'compliance' && <CompliancePage />}
           {page === 'documents' && <DocumentPage />}
           {page === 'safety' && <SafetyPage />}
-          {page === 'inspections' && <InspectionsPage />}
+          {page === 'inspections' && <InspectionsPage params={navParams} />}
           {page === 'reports' && <ReportsPage />}
           {page === 'admin' && <AdminPage />}
-          {page === 'testing' && <TestingPage />}
+          {page === 'testing' && <TestingPage params={navParams} />}
           {page === 'advisor' && <AdvisorPage onNavigate={p => setPage(p as Page)} />}
           {page === 'help' && <HelpPage onNavigate={p => setPage(p as Page)} />}
         </div>

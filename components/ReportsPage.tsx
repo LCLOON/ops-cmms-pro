@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { navigate } from '@/lib/nav';
 
-interface ComplianceItem { title: string; siteName: string; obligationType: string; nextDue: string; status: string; priority: string; }
+interface ComplianceItem { title: string; siteId: string; obligationType: string; nextDue: string; status: string; priority: string; }
 interface BacklogItem { aging: string; count: number; totalCost: number; }
 interface ReportAnalytics {
   pmCompliance: { overdue: number; complianceRate: number };
@@ -29,11 +29,10 @@ interface ReportAnalytics {
   };
 }
 
-const siteNames: Record<string, string> = { 'SITE-LOCK': 'Lockwood', 'SITE-KENN': 'Hydro-Kennebec', 'SITE-SHAW': 'Shawmut', 'SITE-WEST': 'Weston' };
-
 export default function ReportsPage() {
   const [analytics, setAnalytics] = useState<ReportAnalytics | null>(null);
   const [compliance, setCompliance] = useState<ComplianceItem[]>([]);
+  const [sites, setSites] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(() => {
@@ -48,6 +47,12 @@ export default function ReportsPage() {
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    fetch('/api/config?type=sites')
+      .then(response => { if (!response.ok) throw new Error(`Sites request failed (${response.status})`); return response.json(); })
+      .then(data => { if (Array.isArray(data.sites)) setSites(data.sites); })
+      .catch(error => console.error('[reports] Failed to load sites', error));
+  }, []);
 
   if (loading || !analytics) return <div className="text-slate-400 p-8">Loading reports...</div>;
 
@@ -77,7 +82,7 @@ export default function ReportsPage() {
           {urgentCompliance.length > 0 ? (
             <div className="space-y-2">{urgentCompliance.slice(0, 8).map((c: ComplianceItem, i: number) => (
               <div key={i} className="flex items-center justify-between text-xs py-2 border-b border-slate-800/50">
-                <div><span className="text-slate-300">{c.title}</span><span className="text-slate-600 ml-2">{siteNames[c.siteName] || c.siteName}</span></div>
+                <div><span className="text-slate-300">{c.title}</span><span className="text-slate-600 ml-2">{sites.find(site => site.id === c.siteId)?.name || c.siteId}</span></div>
                 <span className="text-red-400">{c.nextDue || 'No date'}</span>
               </div>))}</div>
           ) : <p className="text-green-400 text-sm">All compliance items are current. ✓</p>}

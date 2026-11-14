@@ -28,7 +28,7 @@ export const HYDRO_PLANTS: HydroPlant[] = [
 export interface AssetSeed {
   assetId: string; name: string; category: string; location: string; department: string;
   manufacturer: string; model: string; serialNumber: string; installDate: string;
-  status: string; criticality: string; parentId: string;
+  status: string; criticality: string; parentId: string; siteId?: string;
   area: string; system: string;
 }
 
@@ -93,6 +93,12 @@ export function generateHydroAssets(): { assets: AssetSeed[]; pmSchedules: PmSee
     { id: 'FAC-SHAWMUT', name: 'Shawmut Hydro Station', facility: 'Shawmut Hydro' },
     { id: 'FAC-WESTON', name: 'Weston Station', facility: 'Weston Station' },
   ];
+  const siteMap: Record<string, string> = {
+    'Lockwood Hydro': 'SITE-LOCK',
+    'Hydro-Kennebec Hydro': 'SITE-KENN',
+    'Shawmut Hydro': 'SITE-SHAW',
+    'Weston Station': 'SITE-WEST',
+  };
 
   for (const fp of facilityParents) {
     const plant = HYDRO_PLANTS.find(p => p.facility === fp.facility);
@@ -109,6 +115,7 @@ export function generateHydroAssets(): { assets: AssetSeed[]; pmSchedules: PmSee
       status: 'operational',
       criticality: 'critical',
       parentId: '',
+      siteId: siteMap[fp.facility] || '',
       area: 'Facility',
       system: 'Facility',
     });
@@ -136,6 +143,7 @@ export function generateHydroAssets(): { assets: AssetSeed[]; pmSchedules: PmSee
       status: "operational",
       criticality: mapCriticality(ea.criticality),
       parentId: facilityMap[ea.facility] || ea.parentAsset,
+      siteId: siteMap[ea.facility] || '',
       area: ea.area,
       system: ea.system,
     });

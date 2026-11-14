@@ -16,7 +16,14 @@ export interface NavParams {
   /** Pre-filter a list to this asset. */
   assetId?: string;
   /** Draft context for raising corrective work from a failed test result. */
-  workOrderDraft?: { title: string; description: string; type?: string };
+  workOrderDraft?: {
+    title: string;
+    description: string;
+    type?: string;
+    siteId?: string;
+    sourceTestingRecordId?: string;
+    sourceInspectionId?: string;
+  };
   /** Open or create an RCA associated with this work order. */
   workOrderId?: string;
   /** Pre-fill a list's search box (e.g. a free-text supplier name). */

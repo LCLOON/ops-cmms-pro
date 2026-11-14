@@ -3,6 +3,7 @@
 
 export interface AssetRecord {
   id: string;
+  siteId?: string;
   name: string;
   category: string;
   location: string;
@@ -48,7 +49,7 @@ export function emptyAsset(parentId = ''): AssetRecord {
   return {
     id: '', name: '', category: 'mechanical', location: '', department: '',
     manufacturer: '', model: '', serialNumber: '', installDate: '', warrantyExpiry: '',
-    status: 'operational', criticality: 'low', notes: '', parentId,
+    status: 'operational', criticality: 'low', notes: '', parentId, siteId: '',
     createdAt: '', updatedAt: '', replacementCost: 0, failureMode: '',
   };
 }

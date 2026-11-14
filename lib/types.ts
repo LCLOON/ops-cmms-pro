@@ -1,5 +1,6 @@
 export interface Asset {
   id: string;
+  siteId?: string;
   name: string;
   category: 'mechanical' | 'electrical' | 'hvac' | 'plumbing' | 'structural' | 'vehicle' | 'it' | 'safety' | 'other';
   location: string;
@@ -25,6 +26,10 @@ export interface Asset {
 export interface WorkOrder {
   id: string;
   assetId: string;
+  siteId?: string;
+  pmScheduleId?: string;
+  sourceTestingRecordId?: string;
+  sourceInspectionId?: string;
   title: string;
   description: string;
   type: 'corrective' | 'preventive' | 'predictive' | 'emergency' | 'inspection';
@@ -217,8 +222,10 @@ export interface ComplianceObligation {
 
 export interface Inspection {
   id: string;
+  siteId: string;
   assetId: string;
   complianceObligationId: string;
+  workOrderId?: string;
   inspectionType: 'visual' | 'detailed' | 'regulatory' | 'dam_safety' | 'fish_passage' | 'substation' | 'safety' | 'other';
   title: string;
   description: string;
@@ -352,6 +359,7 @@ export type EquipmentTestType =
 export interface EquipmentTest {
   id: string;
   assetId: string;
+  followUpWorkOrderId?: string;
   discipline: TestDiscipline;
   testType: EquipmentTestType;
   testDate: string;

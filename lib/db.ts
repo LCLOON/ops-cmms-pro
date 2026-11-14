@@ -79,6 +79,7 @@ async function tableExists(db: Client, table: string): Promise<boolean> {
 async function initSchema(db: Client): Promise<void> {
   // Conditional ALTERs: append any columns that are missing from older databases.
   const assetCols: Array<[string, string]> = [
+    ['site_id', 'ALTER TABLE assets ADD COLUMN site_id TEXT REFERENCES sites(id) ON DELETE SET NULL'],
     ['parent_id', "ALTER TABLE assets ADD COLUMN parent_id TEXT NOT NULL DEFAULT ''"],
     ['area', "ALTER TABLE assets ADD COLUMN area TEXT NOT NULL DEFAULT ''"],
     ['system', "ALTER TABLE assets ADD COLUMN system TEXT NOT NULL DEFAULT ''"],
@@ -97,6 +98,15 @@ async function initSchema(db: Client): Promise<void> {
     ['deferral_reason', "ALTER TABLE pm_schedules ADD COLUMN deferral_reason TEXT NOT NULL DEFAULT ''"],
     ['deferral_approved_by', "ALTER TABLE pm_schedules ADD COLUMN deferral_approved_by TEXT NOT NULL DEFAULT ''"],
     ['procedure_id', "ALTER TABLE pm_schedules ADD COLUMN procedure_id TEXT NOT NULL DEFAULT ''"],
+  ];
+  const workOrderCols: Array<[string, string]> = [
+    ['site_id', 'ALTER TABLE work_orders ADD COLUMN site_id TEXT REFERENCES sites(id) ON DELETE SET NULL'],
+    ['pm_schedule_id', 'ALTER TABLE work_orders ADD COLUMN pm_schedule_id TEXT REFERENCES pm_schedules(id) ON DELETE SET NULL'],
+    ['source_testing_record_id', 'ALTER TABLE work_orders ADD COLUMN source_testing_record_id TEXT REFERENCES testing_records(id) ON DELETE SET NULL'],
+    ['source_inspection_id', 'ALTER TABLE work_orders ADD COLUMN source_inspection_id TEXT REFERENCES inspections(id) ON DELETE SET NULL'],
+  ];
+  const inspectionCols: Array<[string, string]> = [
+    ['site_id', 'ALTER TABLE inspections ADD COLUMN site_id TEXT REFERENCES sites(id) ON DELETE SET NULL'],
   ];
   // Governance columns for the SOP library: lifecycle status plus who signed off.
   const procedureCols: Array<[string, string]> = [
@@ -118,6 +128,8 @@ async function initSchema(db: Client): Promise<void> {
   // before its CREATE in the same batch. Skipping missing tables breaks the loop.
   const alterGroups: Array<[string, Array<[string, string]>]> = [
     ['assets', assetCols],
+    ['work_orders', workOrderCols],
+    ['inspections', inspectionCols],
     ['pm_schedules', pmCols],
     ['procedures', procedureCols],
     ['wo_checklist_items', checklistCols],
@@ -155,6 +167,7 @@ async function initSchema(db: Client): Promise<void> {
 
     CREATE TABLE IF NOT EXISTS assets (
       id TEXT PRIMARY KEY,
+      site_id TEXT REFERENCES sites(id) ON DELETE SET NULL,
       name TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT 'other' CHECK(category IN ('mechanical','electrical','hvac','plumbing','structural','vehicle','it','safety','other')),
       location TEXT NOT NULL DEFAULT '',
@@ -174,6 +187,10 @@ async function initSchema(db: Client): Promise<void> {
     CREATE TABLE IF NOT EXISTS work_orders (
       id TEXT PRIMARY KEY,
       asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+      site_id TEXT REFERENCES sites(id) ON DELETE SET NULL,
+      pm_schedule_id TEXT REFERENCES pm_schedules(id) ON DELETE SET NULL,
+      source_testing_record_id TEXT REFERENCES testing_records(id) ON DELETE SET NULL,
+      source_inspection_id TEXT REFERENCES inspections(id) ON DELETE SET NULL,
       title TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       type TEXT NOT NULL DEFAULT 'corrective' CHECK(type IN ('corrective','preventive','predictive','emergency','inspection')),
@@ -345,6 +362,7 @@ async function initSchema(db: Client): Promise<void> {
 
     CREATE TABLE IF NOT EXISTS inspections (
       id TEXT PRIMARY KEY,
+      site_id TEXT REFERENCES sites(id) ON DELETE SET NULL,
       asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
       compliance_obligation_id TEXT REFERENCES compliance_obligations(id) ON DELETE SET NULL,
       inspection_type TEXT NOT NULL DEFAULT 'visual' CHECK(inspection_type IN ('visual','detailed','regulatory','dam_safety','fish_passage','substation','safety','other')),
@@ -566,6 +584,60 @@ async function initSchema(db: Client): Promise<void> {
         await db.execute(ddl);
       }
     }
+  }
+
+  await db.executeMultiple(`
+    UPDATE assets SET site_id = CASE id
+      WHEN 'FAC-LOCKWOOD' THEN 'SITE-LOCK'
+      WHEN 'FAC-KENNEBEC' THEN 'SITE-KENN'
+      WHEN 'FAC-SHAWMUT' THEN 'SITE-SHAW'
+      WHEN 'FAC-WESTON' THEN 'SITE-WEST'
+      ELSE site_id
+    END
+    WHERE site_id IS NULL AND id IN ('FAC-LOCKWOOD','FAC-KENNEBEC','FAC-SHAWMUT','FAC-WESTON')
+      AND EXISTS (SELECT 1 FROM sites WHERE id = CASE assets.id
+        WHEN 'FAC-LOCKWOOD' THEN 'SITE-LOCK'
+        WHEN 'FAC-KENNEBEC' THEN 'SITE-KENN'
+        WHEN 'FAC-SHAWMUT' THEN 'SITE-SHAW'
+        WHEN 'FAC-WESTON' THEN 'SITE-WEST'
+      END);
+
+    WITH RECURSIVE asset_sites(asset_id, site_id) AS (
+      SELECT id, site_id FROM assets WHERE site_id IS NOT NULL
+      UNION
+      SELECT child.id, parent.site_id
+      FROM assets child
+      JOIN asset_sites parent ON child.parent_id = parent.asset_id
+    )
+    UPDATE assets
+    SET site_id = (SELECT asset_sites.site_id FROM asset_sites WHERE asset_sites.asset_id = assets.id LIMIT 1)
+    WHERE site_id IS NULL AND EXISTS (SELECT 1 FROM asset_sites WHERE asset_sites.asset_id = assets.id);
+
+    UPDATE work_orders
+    SET site_id = (SELECT site_id FROM assets WHERE assets.id = work_orders.asset_id)
+    WHERE site_id IS NULL AND asset_id IS NOT NULL;
+
+    UPDATE inspections
+    SET site_id = COALESCE(
+      (SELECT site_id FROM assets WHERE assets.id = inspections.asset_id),
+      (SELECT site_id FROM compliance_obligations WHERE compliance_obligations.id = inspections.compliance_obligation_id)
+    )
+    WHERE site_id IS NULL;
+  `);
+
+  const duplicateActivePm = await db.execute(`
+    SELECT pm_schedule_id FROM work_orders
+    WHERE pm_schedule_id IS NOT NULL AND status IN ('open','in_progress','on_hold')
+    GROUP BY pm_schedule_id HAVING COUNT(*) > 1 LIMIT 1
+  `);
+  if (duplicateActivePm.rows.length === 0) {
+    await db.execute(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_orders_active_pm
+      ON work_orders(pm_schedule_id)
+      WHERE pm_schedule_id IS NOT NULL AND status IN ('open','in_progress','on_hold')
+    `);
+  } else {
+    console.warn('[db] Skipping active-PM uniqueness index until existing duplicate work orders are resolved');
   }
 
   await backfillProcedureGovernance(db);
