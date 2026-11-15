@@ -85,6 +85,25 @@ test('a clear company lets work start; a blocked company does not', async () => 
   } finally { db.close(); }
 });
 
+test('a clear company does not excuse an unready job crew', async () => {
+  const db = await fixture();
+  const crewFetch = async (input) => {
+    const requestId = new URL(String(input)).searchParams.get('requestId');
+    const jobRef = new URL(String(input)).searchParams.get('jobRef');
+    return Response.json(evidence({
+      requestId,
+      jobWorkers: { ready: false, assigned: 1, acknowledged: 0, reasons: ['Alex Kim has not acknowledged this job'] },
+    }));
+  };
+  try {
+    // The work order id travels as the job reference, so nothing has to be typed in.
+    const refusal = await contractorStartBlocker(db, 'wo', env, crewFetch);
+    assert.match(refusal ?? '', /Alex Kim has not acknowledged this job/);
+    // The company itself is clean, so the refusal must be about the crew, not the company.
+    assert.doesNotMatch(refusal ?? '', /company status/);
+  } finally { db.close(); }
+});
+
 test('an outage blocks by default and only advisory mode waves it through', async () => {
   const db = await fixture();
   const offline = async () => { throw new Error('offline'); };

@@ -22,6 +22,10 @@ const evidenceSchema = z.object({
   approvalExpiry: z.string().date().nullable(), insuranceExpiry: z.string().date().nullable(),
   orientationRecorded: z.boolean(),
   namedWorkers: z.object({ active: z.number().int().min(0), expired: z.number().int().min(0) }).strict().optional(),
+  jobWorkers: z.object({
+    ready: z.boolean(), assigned: z.number().int().min(0), acknowledged: z.number().int().min(0),
+    reasons: z.array(z.string().min(1).max(500)).max(20),
+  }).strict().optional(),
   issues: z.array(z.string().min(1).max(500)).max(20),
 }).strict();
 export type ContractorEvidence = z.infer<typeof evidenceSchema>;
@@ -106,10 +110,11 @@ export async function fetchContractorEvidence(
   config: ContractorEvidenceConfig,
   contractorId: string,
   fetcher: typeof fetch = fetch,
+  jobRef?: string,
 ): Promise<ContractorEvidence> {
   const requestId = randomUUID();
   const url = new URL('/api/integrations/contractor-evidence', config.origin);
-  url.search = new URLSearchParams({ ...config.mapping, contractorId, requestId }).toString();
+  url.search = new URLSearchParams({ ...config.mapping, contractorId, requestId, ...(jobRef ? { jobRef } : {}) }).toString();
   try {
     const response = await fetcher(url, {
       headers: { Authorization: `Bearer ${config.token}`, Accept: 'application/json' },
@@ -204,8 +209,13 @@ export async function contractorStartBlocker(
 
   const mode = gateMode(env);
   try {
-    const evidence = await fetchContractorEvidence(config, binding.contractorId, fetcher);
+    const evidence = await fetchContractorEvidence(config, binding.contractorId, fetcher, workOrderId);
     const reasons = companyBlockers(evidence);
+    // A clear company is not a staffed job. Named workers are checked separately and the
+    // work order id is the job reference, so there is nothing to infer or type in.
+    if (evidence.jobWorkers && !evidence.jobWorkers.ready) {
+      reasons.push(...evidence.jobWorkers.reasons);
+    }
     if (reasons.length === 0) return null;
     const message = `Cannot start: contractor ${evidence.companyName} is not clear — ${reasons.join('; ')}. Review the source record before starting work.`;
     if (mode === 'advisory') { console.warn(`[contractor-gate] ${workOrderId}: ${message}`); return null; }
