@@ -6,6 +6,60 @@ Built with Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, and SQ
 
 ## Getting Started
 
+### Optional EHS Procedure References
+
+The EHS control on a work-order row opens a separate read-only procedure view.
+An admin/manager can preview and attach one current published EHS revision to the
+saved work order. Other active users may read it. This does not create checklist
+steps, authorize work, check contractors, release isolation, or change asset status.
+
+The pilot is disabled unless both `OPS_PROCEDURE_PILOT_ENABLED` and
+`OPS_PROCEDURE_DEDICATED_CUSTOMER_CONFIRMED` are `1`. Enable only after verifying a
+dedicated single-customer deployment/database pair, durable storage, matching sites,
+backups, real authentication and separate environment credentials. Mixed-customer
+databases are unsupported; configuration labels do not establish tenant isolation.
+
+Both apps require the same server-only `OPS_PROCEDURE_PILOT_MAPPING` JSON object
+with exactly `customerId`, `ehsInstanceId`, `cmmsInstanceId`, `ehsSiteId`, `cmmsSiteId`.
+Both also need `OPS_PROCEDURE_READ_TOKEN`, a dedicated random credential of at least
+32 characters (not a session or scheduler secret). CMMS requires
+`OPS_EHS_PROCEDURE_ORIGIN`, a fixed HTTPS origin without credentials, path or query.
+Only non-production loopback origins may use HTTP. No browser receives this token.
+
+The retained attachment contains the exact revision, digest and selection provenance.
+It is never replaced when a newer revision is published. Open views refresh every
+30 seconds while visible, and on focus/reconnection; this is a last-check observation,
+not continuous synchronization. Missing/changed/retired sources and failed checks are
+explicit. A network outage preserves already displayed text with an unverified warning;
+browser reload while disconnected is not an offline-document storage guarantee.
+Scope, asset and assignee changes require planner review. Wrong-site access is rejected.
+Attachment requires the same work-order context shown in the preview, rechecked after
+the source request. Failed audit writes roll back the attachment.
+
+Schema initialization additively creates `wo_ehs_procedure_attachments` and
+`ehs_procedure_binding`, with update/delete protection and transactional audit.
+First use binds the database to the configured mapping. There is no replacement,
+removal, remapping or review-acknowledgment workflow in this pilot. Deleted work orders
+do not delete retained evidence. Back up before deploying. Do not remove the immutability
+triggers to resolve a warning; investigate it with the responsible planner instead.
+
+Verification commands:
+
+```powershell
+node --test tests/ehs-procedures.test.mjs
+npm run test:e2e -- --config playwright.procedure.config.ts
+```
+
+The acceptance config expects the EHS checkout at `../ops-ehs-pro`, starts loopback
+servers on 3131/3132 without reusing existing servers, and overrides remote database
+settings with unique temporary databases. It verifies A remains attached after B,
+mapping/role/origin rejection, responsive display, offline warnings and checklist gates.
+Synthetic database artifacts remain under the OS temporary directory with the prefix
+`ops-procedure-pilot-`; screenshots are under `test-results/procedure-pilot`.
+These local checks do not establish production readiness or suite-wide safety.
+
+### Run Locally
+
 ```bash
 npm install
 npm run dev

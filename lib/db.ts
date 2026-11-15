@@ -2,6 +2,7 @@ import { createClient, type Client } from '@libsql/client';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { initEhsAttachments } from './ehs-procedures';
 
 // Resolve the database target:
 //  - TURSO_DATABASE_URL (+ TURSO_AUTH_TOKEN) -> remote libSQL/Turso (durable, serverless-safe)
@@ -63,6 +64,7 @@ async function initClient(): Promise<Client> {
     await client.execute('PRAGMA foreign_keys = ON').catch(() => {});
   }
   await initSchema(client);
+  await initEhsAttachments(client);
   return client;
 }
 

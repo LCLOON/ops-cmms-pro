@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import DataTable, { type Column } from './DataTable';
 import Modal from './Modal';
+import EhsProcedurePanel from './EhsProcedurePanel';
 import { Trash2, Plus, Package, Clock, ListChecks, ExternalLink } from 'lucide-react';
 import { navigate, type NavParams } from '@/lib/nav';
 import { bandToAssetCriticality, type RiskBand } from '@/lib/criticality';
@@ -65,6 +66,7 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
     type: params.workOrderDraft.type ?? 'corrective',
   } : defaultWO);
   const [saving, setSaving] = useState(false);
+  const [procedureWorkOrder, setProcedureWorkOrder] = useState<WorkOrder | null>(null);
 
   const fetchItems = useCallback(() => {
     fetch('/api/work-orders').then(r => r.json()).then(setItems).catch(() => {}).finally(() => setLoading(false));
@@ -134,6 +136,11 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
 
   const columns: Column<WorkOrder>[] = [
     { key: 'id', header: 'WO #' },
+    { key: 'ehsProcedure', header: 'EHS', render: workOrder => (
+      <button type="button" onClick={() => setProcedureWorkOrder(workOrder)} title="View EHS procedure" aria-label={`View EHS procedure for ${workOrder.id}`} className="p-2 text-blue-300 hover:text-blue-200">
+        <ExternalLink className="h-4 w-4" />
+      </button>
+    ) },
     { key: 'title', header: 'Title' },
     { key: 'assetId', header: 'Asset', render: w => w.assetId ? (
       <button onClick={() => navigate('assets', { focusId: w.assetId })}
@@ -179,6 +186,11 @@ export default function WorkOrderPage({ params }: { params?: NavParams }) {
           <WOForm form={form} setForm={setForm} onSave={save} saving={saving} isEdit={!!editItem} assets={assets}
             sites={sites}
             riskBands={riskBands} criticalityLoadFailed={criticalityLoadFailed} />
+        </Modal>
+      )}
+      {procedureWorkOrder && (
+        <Modal open onClose={() => setProcedureWorkOrder(null)} title={`EHS procedure: ${procedureWorkOrder.id}`}>
+          <EhsProcedurePanel key={procedureWorkOrder.id} workOrderId={procedureWorkOrder.id} />
         </Modal>
       )}
     </div>
