@@ -21,6 +21,14 @@ outage can never look like approval and a reachable EHS server is never required
 work. It reports; it never edits the job. Jobs with no pinned procedure, and work orders
 outside the configured site, are unaffected.
 
+**Contractor gate.** With `OPS_CONTRACTOR_EVIDENCE_ENABLED=1`, a work order bound to a
+contractor ID also asks Contractor Management whether that company is clear, and refuses
+the transition into `in_progress` when it is not — suspended, disqualified, approved over
+blocking findings, or with missing/expired approval or insurance. A source outage blocks
+by default. `OPS_CONTRACTOR_GATE_MODE=advisory` logs instead of blocking and is meant for
+a planned outage or a staged rollout. Unbound work orders are never gated. This checks the
+company record only; named-worker qualification per job is not yet modelled.
+
 The pilot is disabled unless both `OPS_PROCEDURE_PILOT_ENABLED` and
 `OPS_PROCEDURE_DEDICATED_CUSTOMER_CONFIRMED` are `1`. Enable only after verifying a
 dedicated single-customer deployment/database pair, durable storage, matching sites,

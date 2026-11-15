@@ -17,6 +17,7 @@
  */
 
 import { getDb } from './db';
+import { contractorStartBlocker } from './contractor-evidence';
 import { ehsStartBlocker } from './ehs-procedures';
 import { getCompletionBlockers } from './operations';
 
@@ -48,8 +49,14 @@ export async function workOrderGate(
   // is already running must not be locked out, so only the transition into
   // `in_progress` is gated.
   if (nextStatus === 'in_progress' && currentStatus !== 'in_progress') {
-    const refusal = await ehsStartBlocker(await getDb(), id);
-    if (refusal) return { error: refusal, status: 409 };
+    const db = await getDb();
+    const procedureRefusal = await ehsStartBlocker(db, id);
+    if (procedureRefusal) return { error: procedureRefusal, status: 409 };
+
+    // The procedure check is local; this one asks the system that owns contractor
+    // records, because CMMS cannot answer "is this company clear?" from its own tables.
+    const contractorRefusal = await contractorStartBlocker(db, id);
+    if (contractorRefusal) return { error: contractorRefusal, status: 409 };
   }
 
   return null;
