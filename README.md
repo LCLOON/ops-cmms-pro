@@ -26,8 +26,13 @@ contractor ID also asks Contractor Management whether that company is clear, and
 the transition into `in_progress` when it is not — suspended, disqualified, approved over
 blocking findings, or with missing/expired approval or insurance. A source outage blocks
 by default. `OPS_CONTRACTOR_GATE_MODE=advisory` logs instead of blocking and is meant for
-a planned outage or a staged rollout. Unbound work orders are never gated. This checks the
-company record only; named-worker qualification per job is not yet modelled.
+a planned outage or a staged rollout. Unbound work orders are never gated.
+
+The work order ID is sent as the job reference, and the job's named workers are checked
+too: a bound job also cannot start when no worker is assigned to it in Contractor
+Management, or when an assigned worker is inactive, has missing or expired training, or
+has not acknowledged the job. Assign workers there, using the work order ID as the job
+reference, before enabling this gate.
 
 The pilot is disabled unless both `OPS_PROCEDURE_PILOT_ENABLED` and
 `OPS_PROCEDURE_DEDICATED_CUSTOMER_CONFIRMED` are `1`. Enable only after verifying a
