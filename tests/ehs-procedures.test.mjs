@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient } from '@libsql/client';
-import { attachEhsProcedure, ehsDigest, getEhsConfig, getEhsProcedureView, initEhsAttachments, validateEhsEnvelope } from '../lib/ehs-procedures.ts';
+import { attachEhsProcedure, ehsDigest, ehsStartBlocker, getEhsConfig, getEhsProcedureView, initEhsAttachments, validateEhsEnvelope } from '../lib/ehs-procedures.ts';
 
 const mapping = { customerId: 'customer-a', ehsInstanceId: 'ehs-a', cmmsInstanceId: 'cmms-a', ehsSiteId: 'site-ehs', cmmsSiteId: 'site-cmms' };
 const config = { mapping, token: 'synthetic-token-only-not-a-secret-12345', origin: 'https://ehs.example.test' };
@@ -71,6 +71,35 @@ test('attachment pins A, reports B and outages, warns on scope changes without c
     assert.equal((await db.execute('SELECT COUNT(*) AS total FROM audit_log')).rows[0].total, 1);
     await assert.rejects(db.execute('DELETE FROM wo_ehs_procedure_attachments'));
     await assert.rejects(db.execute("UPDATE wo_ehs_procedure_attachments SET digest='wrong'"));
+  } finally { db.close(); }
+});
+
+test('pre-start gate refuses only when pinned evidence no longer matches the work', async context => {
+  const db = await fixture();
+  const env = {
+    OPS_PROCEDURE_PILOT_ENABLED: '1', OPS_PROCEDURE_DEDICATED_CUSTOMER_CONFIRMED: '1',
+    OPS_PROCEDURE_PILOT_MAPPING: JSON.stringify(mapping), OPS_PROCEDURE_READ_TOKEN: config.token,
+    OPS_EHS_PROCEDURE_ORIGIN: config.origin, NODE_ENV: 'production',
+  };
+  context.mock.method(globalThis, 'fetch', async () => Response.json(envelope));
+  try {
+    await db.execute("INSERT INTO work_orders VALUES('wo2','site-cmms','asset','Second job','Scope','Crew','corrective','2026-01-01','open')");
+    await db.execute("INSERT INTO work_orders VALUES('wo3','site-other','asset','Elsewhere','Scope','Crew','corrective','2026-01-01','open')");
+    // No pilot configured: the gate must stay out of the way.
+    assert.equal(await ehsStartBlocker(db, 'wo', {}), null);
+    // A job with no pinned procedure has no contradiction to raise.
+    assert.equal(await ehsStartBlocker(db, 'wo2', env), null);
+    // Outside the configured site the pilot does not apply.
+    assert.equal(await ehsStartBlocker(db, 'wo3', env), null);
+    await attachEhsProcedure(db, config, 1, 'wo', revision.id, expectedContext);
+    assert.equal(await ehsStartBlocker(db, 'wo', env), null);
+    // Crew substitution is the case a paper procedure never catches.
+    await db.execute("UPDATE work_orders SET assigned_to='Substitute crew' WHERE id='wo'");
+    const refusal = await ehsStartBlocker(db, 'wo', env);
+    assert.match(refusal, /Cannot start/);
+    assert.match(refusal, /SOP-TEST/);
+    // The check reports; it never edits the job it is judging.
+    assert.equal((await db.execute("SELECT status FROM work_orders WHERE id='wo'")).rows[0].status, 'open');
   } finally { db.close(); }
 });
 

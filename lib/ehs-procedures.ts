@@ -140,8 +140,37 @@ async function readAttachment(db: Client | Transaction, config: EhsConfig, workO
   return { revision: parsed.data, digest: String(row.digest), selectedBy: String(row.selected_by), selectedAt: String(row.selected_at), contextChanged: row.context_digest !== contextDigest };
 }
 
-export async function attachEhsProcedure(db: Client, config: EhsConfig, userId: number, workOrderId: string, revisionId: string, expectedContext: string): Promise<void> {
-  const user = await currentProcedureUser(db, userId);
+/**
+ * Pre-start gate. Runs before work begins, not after it finishes.
+ *
+ * It deliberately makes no network call: a job must never be startable only while
+ * another system happens to be reachable, and an outage must not look like approval.
+ * What it can prove locally is the important part — the procedure on the work order
+ * was reviewed against a different scope, asset or assignee. That is exactly the
+ * case where a crew would otherwise start under a stale procedure.
+ */
+export async function ehsStartBlocker(
+  db: Client,
+  workOrderId: string,
+  env: Record<string, string | undefined> = process.env,
+): Promise<string | null> {
+  let config: EhsConfig;
+  try { config = getEhsConfig(env); } catch { return null; }
+  try {
+    const { contextDigest } = await scopedWorkOrder(db, config, workOrderId);
+    const attachment = await readAttachment(db, config, workOrderId, contextDigest);
+    if (!attachment || !attachment.contextChanged) return null;
+    return `Cannot start: EHS procedure ${attachment.revision.number} rev ${attachment.revision.revision} was reviewed against a different work scope. Re-review the pinned procedure with the planner before starting.`;
+  } catch (error) {
+    // Outside the configured site there is no pilot to enforce.
+    if (error instanceof EhsProcedureError && error.status === 403) return null;
+    // Anything else means the pinned procedure could not be verified. Refuse rather
+    // than let unverified evidence read as clearance.
+    return 'Cannot start: the pinned EHS procedure could not be verified for this work order.';
+  }
+}
+
+export async function attachEhsProcedure(db: Client, config: EhsConfig, userId: number, workOrderId: string, revisionId: string, expectedContext: string): Promise<void> {  const user = await currentProcedureUser(db, userId);
   if (!user.canAttach) throw new EhsProcedureError('Planner permission required', 403);
   const initial = await scopedWorkOrder(db, config, workOrderId);
   if (initial.contextDigest !== expectedContext) throw new EhsProcedureError('Work order changed since preview. Reload and review.');

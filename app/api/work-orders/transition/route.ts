@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { transitionWorkOrderStatus, getValidStatusTransitions, getWorkOrder, logAudit } from '@/lib/operations';
+import { workOrderGate } from '@/lib/work-order-gates';
 
 export async function POST(request: Request) {
   try {
@@ -14,6 +15,11 @@ export async function POST(request: Request) {
     // Read the prior status BEFORE transitioning — reading afterwards records
     // the new value twice and loses the before/after pair.
     const prior = await getWorkOrder(id);
+
+    // This endpoint used to change status with no check at all, so the checklist
+    // gate and the pre-start gate could both be walked around by calling it directly.
+    const refusal = await workOrderGate(id, status, prior?.status ?? '');
+    if (refusal) return NextResponse.json({ error: refusal.error }, { status: refusal.status });
 
     const result = await transitionWorkOrderStatus(id, status);
     if (!result.ok) return NextResponse.json({ error: result.error || 'Invalid status transition' }, { status: 400 });

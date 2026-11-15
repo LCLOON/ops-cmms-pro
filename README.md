@@ -13,6 +13,14 @@ An admin/manager can preview and attach one current published EHS revision to th
 saved work order. Other active users may read it. This does not create checklist
 steps, authorize work, check contractors, release isolation, or change asset status.
 
+**Pre-start gate.** When the pilot is configured and a work order already has a pinned
+procedure, moving that work order into `in_progress` is refused if the work order's
+recorded context (site, asset, title, description, assignee, type) has changed since the
+procedure was reviewed. The check is local only — it makes no network call, so an EHS
+outage can never look like approval and a reachable EHS server is never required to start
+work. It reports; it never edits the job. Jobs with no pinned procedure, and work orders
+outside the configured site, are unaffected.
+
 The pilot is disabled unless both `OPS_PROCEDURE_PILOT_ENABLED` and
 `OPS_PROCEDURE_DEDICATED_CUSTOMER_CONFIRMED` are `1`. Enable only after verifying a
 dedicated single-customer deployment/database pair, durable storage, matching sites,

@@ -2,19 +2,14 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import {
   getWorkOrders, getWorkOrder, getAsset, getSites, getPmSchedules, getTestingRecords,
-  getInspections, getOilAnalysisRecords, upsertWorkOrder, deleteWorkOrder, getCompletionBlockers, logAudit,
+  getInspections, getOilAnalysisRecords, upsertWorkOrder, deleteWorkOrder, logAudit,
 } from '@/lib/operations';
 import { workOrderSchema } from '@/lib/validations';
+import { workOrderGate } from '@/lib/work-order-gates';
 
-// Both POST (which upserts by id) and PUT write the status column directly, so
-// the checklist completion gate lives here too — route handlers are the only
+// Both POST (which upserts by id) and PUT write the status column directly, so the
+// gates live in lib/work-order-gates.ts and run here too. Route handlers are the only
 // real control; the form's status dropdown is not.
-async function completionBlocker(id: string, nextStatus: string, currentStatus: string): Promise<string | null> {
-  if (nextStatus !== 'completed' || currentStatus === 'completed') return null;
-  const blockers = await getCompletionBlockers(id);
-  return blockers.length > 0 ? `Cannot complete: ${blockers.join('; ')}` : null;
-}
-
 async function validateWorkOrderLinks(workOrder: {
   assetId: string; siteId: string; pmScheduleId: string;
   sourceTestingRecordId: string; sourceInspectionId: string; sourceOilAnalysisId: string;
@@ -96,8 +91,8 @@ export async function POST(request: Request) {
     };
     const linkError = await validateWorkOrderLinks(wo);
     if (linkError) return NextResponse.json({ error: linkError }, { status: 400 });
-    const blocked = await completionBlocker(id, parsed.data.status, priorRow?.status ?? '');
-    if (blocked) return NextResponse.json({ error: blocked }, { status: 400 });
+    const refusal = await workOrderGate(id, parsed.data.status, priorRow?.status ?? '');
+    if (refusal) return NextResponse.json({ error: refusal.error }, { status: refusal.status });
 
     // This handler upserts by id, so preserve the audit fields of an existing
     // record instead of blanking them — PUT already does this, and otherwise a
@@ -139,8 +134,8 @@ export async function PUT(request: Request) {
     };
     const linkError = await validateWorkOrderLinks(links);
     if (linkError) return NextResponse.json({ error: linkError }, { status: 400 });
-    const blocked = await completionBlocker(body.id, parsed.data.status, existing.status);
-    if (blocked) return NextResponse.json({ error: blocked }, { status: 400 });
+    const refusal = await workOrderGate(body.id, parsed.data.status, existing.status);
+    if (refusal) return NextResponse.json({ error: refusal.error }, { status: refusal.status });
 
     await upsertWorkOrder({ ...links, id: body.id, completedDate: existing.completedDate, createdAt: existing.createdAt, updatedAt: new Date().toISOString() });
     await logAudit({
